@@ -1,0 +1,251 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Encounter Preference — Meds · Tests · Therapy</title>
+<style>
+  :root{
+    --bg:#f4f6f9; --card:#ffffff; --line:#e3e8ef; --txt:#1a2332; --sub:#64748b;
+    --accent:#2563eb; --accent-soft:#eff4ff; --good:#0e9f6e; --bad:#dc2626;
+    --chip:#f1f5f9; --chip-on:#2563eb;
+  }
+  *{box-sizing:border-box;margin:0;padding:0}
+  body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Inter,sans-serif;background:var(--bg);color:var(--txt);font-size:13px}
+  .wrap{max-width:1400px;margin:0 auto;padding:18px 20px 60px}
+  header{display:flex;flex-wrap:wrap;align-items:baseline;gap:10px;margin-bottom:14px}
+  header h1{font-size:20px;font-weight:700;letter-spacing:-.02em}
+  header .upd{color:var(--sub);font-size:12px}
+  .panel{background:var(--card);border:1px solid var(--line);border-radius:12px;padding:14px 16px;margin-bottom:14px}
+  .frow{display:flex;flex-wrap:wrap;gap:18px;align-items:flex-start}
+  .fgroup label{display:block;font-size:11px;font-weight:600;text-transform:uppercase;letter-spacing:.05em;color:var(--sub);margin-bottom:6px}
+  select{font:inherit;padding:6px 10px;border:1px solid var(--line);border-radius:8px;background:#fff;min-width:220px}
+  .chips{display:flex;flex-wrap:wrap;gap:6px}
+  .chip{padding:5px 12px;border-radius:999px;background:var(--chip);border:1px solid var(--line);cursor:pointer;user-select:none;font-weight:500;color:#334155}
+  .chip.on{background:var(--chip-on);border-color:var(--chip-on);color:#fff}
+  .tabs{display:flex;gap:4px;margin-bottom:0;border-bottom:1px solid var(--line)}
+  .tab{padding:9px 22px;font-weight:600;font-size:14px;color:var(--sub);cursor:pointer;border:1px solid transparent;border-bottom:none;border-radius:10px 10px 0 0;user-select:none}
+  .tab.on{background:var(--card);border-color:var(--line);color:var(--accent);position:relative;top:1px}
+  .tablewrap{background:var(--card);border:1px solid var(--line);border-radius:0 12px 12px 12px;overflow:auto;max-height:78vh}
+  table{border-collapse:separate;border-spacing:0;width:max-content;min-width:100%}
+  th,td{padding:7px 12px;text-align:right;white-space:nowrap;border-bottom:1px solid var(--line);font-variant-numeric:tabular-nums}
+  thead th{position:sticky;top:0;background:#f8fafc;z-index:3;font-size:11.5px;color:var(--sub);font-weight:600;border-bottom:1px solid var(--line)}
+  thead th:first-child{z-index:4}
+  tbody th{position:sticky;left:0;background:var(--card);text-align:left;font-weight:500;z-index:2;min-width:230px;border-right:1px solid var(--line)}
+  thead th:first-child{position:sticky;left:0;background:#f8fafc}
+  th.totcol,td.totcol{background:#f8fafc;font-weight:600;border-right:1px solid var(--line)}
+  tr.metric-strong th, tr.metric-strong td{font-weight:600}
+  tr.pctrow td{color:#475569}
+  tr.reason-toggle th{cursor:pointer;color:var(--accent);font-weight:600}
+  tr.reason-toggle th .tri{display:inline-block;transition:transform .15s;margin-right:6px}
+  tr.reason-toggle.open th .tri{transform:rotate(90deg)}
+  tr.reason-row th{padding-left:34px;font-weight:400;color:var(--sub);font-size:12.5px}
+  tr.reason-row td{color:var(--sub);font-size:12.5px}
+  tr.sep td, tr.sep th{border-bottom:2px solid #cbd5e1}
+  td.hot{background:#fef2f2;color:var(--bad)}
+  td.warm{background:#fff7ed}
+  td.cool{background:#f0fdf4;color:var(--good)}
+  .foot{color:var(--sub);font-size:11.5px;margin-top:10px;line-height:1.6}
+  .empty{padding:40px;text-align:center;color:var(--sub)}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <h1>Encounter Preference</h1>
+    <span class="upd" id="updated"></span>
+  </header>
+
+  <div class="panel">
+    <div class="frow">
+      <div class="fgroup">
+        <label>Provider</label>
+        <select id="provider"><option value="">All providers</option></select>
+      </div>
+      <div class="fgroup">
+        <label>Consultation type</label>
+        <div class="chips" id="ctypeChips"></div>
+      </div>
+      <div class="fgroup">
+        <label>Diagnosis</label>
+        <div class="chips" id="diagChips"></div>
+      </div>
+    </div>
+  </div>
+
+  <div class="tabs" id="tabs"></div>
+  <div class="tablewrap"><div id="tableHost"><div class="empty">Loading…</div></div></div>
+
+  <div class="foot">
+    <b>Definitions.</b> Calls done = COMPLETED/RECONSULTED appointments (Screening Call offline/online; Repeat = Follow&nbsp;Up, Patient&nbsp;Queries, Report&nbsp;Reading).
+    Prescribed = the call's encounter carries at least one order of the tab's kind (meds = drug Rx line, tests = lab test order, therapy = therapy Rx).
+    Converted = paid invoice with a drug / lab item on that encounter; therapy = therapy order consumed or therapy invoice paid.
+    Not-prescribed reasons come from the doctor's form answer on the encounter; not-converted reasons come from the billing funnel (med serviceability, invoice raised-but-unpaid, no invoice).
+    Not&nbsp;prescribed&nbsp;% is over calls done; Not&nbsp;converted&nbsp;% is over prescribed calls. Diagnosis = patient's latest merged-rx paperform diagnosis (MH / STI / ED+ / PE+ / ED+PE+ / Others).
+    Current week is partial.
+  </div>
+</div>
+
+<script src="tracker_data.js"></script>
+<script>
+(function(){
+  var D = window.EP_DATA;
+  if(!D){ document.getElementById('tableHost').innerHTML = '<div class="empty">tracker_data.js missing — run fetch_data.py</div>'; return; }
+  document.getElementById('updated').textContent = 'Updated ' + D.updated;
+
+  var TABS = [ {id:0,key:'Meds',noun:'Meds'}, {id:1,key:'Tests',noun:'Tests'}, {id:2,key:'Therapy',noun:'Therapy'} ];
+  var CTYPE_LABELS = {'Offline SC':'Offline SC','Online SC':'Online SC','FU':'Repeat · FU','PQ':'Repeat · PQ','RR':'Repeat · RR'};
+
+  var state = { tab:0, provider:'', ctypes:new Set(), diags:new Set(),
+                openNR:false, openNC:false };
+
+  // ── filter widgets ─────────────────────────────────────────────
+  var provSel = document.getElementById('provider');
+  D.providers.forEach(function(p,i){
+    var o = document.createElement('option'); o.value = i; o.textContent = p; provSel.appendChild(o);
+  });
+  provSel.onchange = function(){ state.provider = provSel.value; render(); };
+
+  function buildChips(hostId, values, labels, sel){
+    var host = document.getElementById(hostId);
+    var all = document.createElement('span'); all.className = 'chip on'; all.textContent = 'All';
+    host.appendChild(all);
+    var chips = values.map(function(v){
+      var c = document.createElement('span'); c.className = 'chip'; c.textContent = labels ? labels[v] : v;
+      c.onclick = function(){
+        if(sel.has(v)) sel.delete(v); else sel.add(v);
+        if(sel.size === values.length) sel.clear();
+        sync(); render();
+      };
+      host.appendChild(c); return c;
+    });
+    all.onclick = function(){ sel.clear(); sync(); render(); };
+    function sync(){
+      all.classList.toggle('on', sel.size === 0);
+      chips.forEach(function(c,i){ c.classList.toggle('on', sel.has(values[i])); });
+    }
+  }
+  buildChips('ctypeChips', D.ctypes, CTYPE_LABELS, state.ctypes);
+  buildChips('diagChips', D.diags, null, state.diags);
+
+  // ── tabs ───────────────────────────────────────────────────────
+  var tabsHost = document.getElementById('tabs');
+  TABS.forEach(function(t){
+    var el = document.createElement('div'); el.className = 'tab' + (t.id===0?' on':''); el.textContent = t.key;
+    el.onclick = function(){
+      state.tab = t.id;
+      tabsHost.querySelectorAll('.tab').forEach(function(x,i){ x.classList.toggle('on', i===t.id); });
+      render();
+    };
+    tabsHost.appendChild(el);
+  });
+
+  // ── aggregation ────────────────────────────────────────────────
+  function aggregate(){
+    // per week: {calls, rx, cv, nc:{}, nr:{}} + same for 'tot'
+    var W = D.weeks.length, out = [], tot = mk();
+    for(var i=0;i<W;i++) out.push(mk());
+    function mk(){ return {calls:0, rx:0, cv:0, nc:{}, nr:{}}; }
+    D.rows.forEach(function(r){
+      if(state.provider !== '' && r[1] !== +state.provider) return;
+      if(state.ctypes.size && !state.ctypes.has(D.ctypes[r[2]])) return;
+      if(state.diags.size && !state.diags.has(D.diags[r[3]])) return;
+      var pack = r[5 + state.tab];           // [rx, cv, nc pairs, nr pairs]
+      [out[r[0]], tot].forEach(function(cell){
+        cell.calls += r[4]; cell.rx += pack[0]; cell.cv += pack[1];
+        pack[2].forEach(function(p){ cell.nc[p[0]] = (cell.nc[p[0]]||0) + p[1]; });
+        pack[3].forEach(function(p){ cell.nr[p[0]] = (cell.nr[p[0]]||0) + p[1]; });
+      });
+    });
+    return {weeks:out, tot:tot};
+  }
+
+  // ── rendering ──────────────────────────────────────────────────
+  function fmtWk(w){
+    var d = new Date(w + 'T00:00:00');
+    var lbl = d.toLocaleDateString('en-GB',{day:'numeric',month:'short'});
+    return lbl;
+  }
+  function pct(n,d){ return d ? (100*n/d).toFixed(1) + '%' : '—'; }
+  function heat(n,d,invert){
+    if(!d) return '';
+    var v = n/d;
+    if(invert) v = 1 - v;
+    return v >= .5 ? 'hot' : (v >= .25 ? 'warm' : 'cool');
+  }
+
+  function render(){
+    var A = aggregate(), noun = TABS[state.tab].noun;
+    var W = D.weeks.length;
+    var currentMon = (function(){ var d=new Date(); d.setDate(d.getDate()-((d.getDay()+6)%7)); return d.toISOString().slice(0,10); })();
+
+    var h = '<table><thead><tr><th>Metric</th><th class="totcol">Total</th>';
+    for(var i=0;i<W;i++) h += '<th>' + fmtWk(D.weeks[i]) + (D.weeks[i]===currentMon?'<br><span style="font-weight:400">partial</span>':'') + '</th>';
+    h += '</tr></thead><tbody>';
+
+    function row(label, fn, cls, thAttr){
+      var s = '<tr class="' + (cls||'') + '"><th ' + (thAttr||'') + '>' + label + '</th>';
+      s += '<td class="totcol">' + fn(A.tot, true) + '</td>';
+      for(var i=0;i<W;i++) s += fn(A.weeks[i], false, true) || '';
+      return s + '</tr>';
+    }
+    function num(get){
+      return function(c, isTot, asCell){
+        var v = get(c);
+        return asCell ? '<td>' + (v||v===0? v.toLocaleString('en-IN') : '—') + '</td>' : v.toLocaleString('en-IN');
+      };
+    }
+    function pctCell(numF, denF, invert){
+      return function(c, isTot, asCell){
+        var n = numF(c), d = denF(c), t = pct(n,d);
+        return asCell ? '<td class="' + heat(n,d,invert) + '">' + t + '</td>' : t;
+      };
+    }
+
+    h += row('Total calls done', num(function(c){return c.calls;}), 'metric-strong');
+    h += row(noun + ' prescribed', num(function(c){return c.rx;}));
+    h += row('Not prescribed', num(function(c){return c.calls - c.rx;}));
+    h += row('Not prescribed %', pctCell(function(c){return c.calls-c.rx;}, function(c){return c.calls;}), 'pctrow');
+
+    // reasons: not prescribed
+    var nrKeys = Object.keys(A.tot.nr).sort(function(a,b){ return A.tot.nr[b]-A.tot.nr[a]; });
+    h += '<tr class="reason-toggle' + (state.openNR?' open':'') + '" data-t="nr"><th><span class="tri">▶</span>Reasons — not prescribed (' + nrKeys.length + ')</th><td class="totcol"></td>' + '<td></td>'.repeat(W) + '</tr>';
+    if(state.openNR){
+      nrKeys.forEach(function(k){
+        h += row(D.reasons[k] + ' <span style="opacity:.7">(' + pct(A.tot.nr[k], A.tot.calls - A.tot.rx) + ')</span>',
+                 num(function(c){return c.nr[k]||0;}), 'reason-row');
+      });
+    }
+    h += row('Converted', num(function(c){return c.cv;}));
+    h += row('Not converted', num(function(c){return c.rx - c.cv;}));
+    h += row('Not converted %', pctCell(function(c){return c.rx-c.cv;}, function(c){return c.rx;}), 'pctrow');
+
+    var ncKeys = Object.keys(A.tot.nc).sort(function(a,b){ return A.tot.nc[b]-A.tot.nc[a]; });
+    h += '<tr class="reason-toggle' + (state.openNC?' open':'') + '" data-t="nc"><th><span class="tri">▶</span>Reasons — not converted (' + ncKeys.length + ')</th><td class="totcol"></td>' + '<td></td>'.repeat(W) + '</tr>';
+    if(state.openNC){
+      ncKeys.forEach(function(k){
+        h += row(D.reasons[k] + ' <span style="opacity:.7">(' + pct(A.tot.nc[k], A.tot.rx - A.tot.cv) + ')</span>',
+                 num(function(c){return c.nc[k]||0;}), 'reason-row');
+      });
+    }
+    h += '</tbody></table>';
+
+    var host = document.getElementById('tableHost');
+    host.innerHTML = h;
+    host.querySelectorAll('.reason-toggle th').forEach(function(th){
+      th.onclick = function(){
+        var t = th.parentElement.getAttribute('data-t');
+        if(t==='nr') state.openNR = !state.openNR; else state.openNC = !state.openNC;
+        render();
+      };
+    });
+    // scroll to latest week
+    var wrap = document.querySelector('.tablewrap');
+    wrap.scrollLeft = wrap.scrollWidth;
+  }
+
+  render();
+})();
+</script>
+</body>
+</html>
