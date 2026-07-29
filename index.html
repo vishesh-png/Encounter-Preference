@@ -80,7 +80,7 @@
     <b>Definitions.</b> Calls done = COMPLETED/RECONSULTED appointments (Screening Call offline/online; Repeat = Follow&nbsp;Up, Patient&nbsp;Queries, Report&nbsp;Reading).
     Prescribed = the call's encounter carries at least one order of the tab's kind (meds = drug Rx line, tests = lab test order, therapy = therapy Rx).
     Converted = paid invoice with a drug / lab item on that encounter; therapy = therapy order consumed or therapy invoice paid.
-    Not-prescribed reasons come from the doctor's form answer on the encounter; not-converted reasons come from the billing funnel (med serviceability, invoice raised-but-unpaid, no invoice).
+    Not-prescribed reasons come from the doctor's form answer on the encounter. Not-converted reasons are the patient's opt-out reason from encounter preferences (drug / lab-test / therapy level, falling back to the encounter-level opt-out); where no opt-out is logged, the billing funnel is shown (med serviceability, invoice raised-but-unpaid, no invoice).
     Not&nbsp;prescribed&nbsp;% is over calls done; Not&nbsp;converted&nbsp;% is over prescribed calls. Diagnosis = patient's latest merged-rx paperform diagnosis (MH / STI / ED+ / PE+ / ED+PE+ / Others).
     Current week is partial.
   </div>

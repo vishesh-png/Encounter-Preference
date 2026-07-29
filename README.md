@@ -15,7 +15,7 @@ Week-on-week tracker of what doctors prescribe on done calls — **Meds / Tests 
 | Reasons — not prescribed | Doctor's paperform answer on the encounter, bucketed (e.g. "Has meds already / remaining", "Deferred to follow-up") |
 | Converted | Paid invoice with drug / lab item on the encounter; therapy = order consumed (`remaining_quantity < quantity`) or paid therapy invoice item |
 | Not converted % | Not converted ÷ prescribed |
-| Reasons — not converted | Billing funnel: ≥1 med not serviceable at clinic / invoice raised-but-unpaid / no invoice raised |
+| Reasons — not converted | Patient opt-out reason from `allo_encounters.encounter_preferences` (`preference_type` drug / lab_test / consultation, falling back to encounter-level opt-out), bucketed. Where no opt-out is logged: billing funnel (≥1 med not serviceable / invoice raised-but-unpaid / no invoice) |
 
 Filters: provider, consultation type (Offline SC / Online SC / Repeat FU / PQ / RR),
 diagnosis (MH / STI / ED+ / PE+ / ED+PE+ / Others — patient's latest merged-rx paperform diagnosis).

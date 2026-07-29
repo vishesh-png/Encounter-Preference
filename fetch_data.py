@@ -87,6 +87,38 @@ def run_query(sql, label, timeout_s=1800):
     return rows
 
 
+# Patient opt-out reason buckets (allo_encounters.encounter_preferences.opt_out_reason
+# is semi-structured free text; specific causes must be checked before the generic
+# "buy later" catch-all because most values are prefixed "Will buy later - <cause>").
+def bucket(r):
+    return f"""CASE
+        WHEN {r} IS NULL THEN 'Opt-out logged (no reason)'
+        WHEN {r} ILIKE '%left the clinic%' THEN 'Left clinic before purchase chat'
+        WHEN {r} ILIKE '%phlebo%' THEN 'Phlebo not available'
+        WHEN {r} ILIKE '%unservi%' OR {r} ILIKE '%not servi%' OR {r} ILIKE '%no stock%'
+          OR {r} ILIKE '%not available%' THEN 'Not serviceable / no stock'
+        WHEN {r} ILIKE '%outside%' OR {r} ILIKE '%known pharmacy%' OR {r} ILIKE '%known lab%'
+          OR {r} ILIKE '%preferred lab%' OR {r} ILIKE '%elsewhere%' THEN 'Will buy / do it outside'
+        WHEN {r} ILIKE '%budget%' OR {r} ILIKE '%price%' OR {r} ILIKE '%money%'
+          OR {r} ILIKE '%afford%' OR {r} ILIKE '%financial%' THEN 'Budget / price'
+        WHEN {r} ILIKE '%believe%' THEN 'Does not believe in therapy'
+        WHEN {r} ILIKE '%side effect%' THEN 'Fear of side effects'
+        WHEN {r} ILIKE '%optional%' THEN 'Doctor marked optional'
+        WHEN {r} ILIKE '%check if medicine%' OR {r} ILIKE '%medicines work%' OR {r} ILIKE '%medicine work%'
+          OR {r} ILIKE '%try medicine%' OR {r} ILIKE '%few days%' OR {r} ILIKE '%helps%'
+                                        THEN 'Wants to try meds first'
+        WHEN {r} ILIKE '%already%' OR {r} ILIKE '%recent report%' OR {r} ILIKE '%recently%'
+                                        THEN 'Already has it / done recently'
+        WHEN {r} ILIKE '%due date%' OR {r} ILIKE '%later date%' THEN 'Test due later'
+        WHEN {r} ILIKE '%later%' OR {r} ILIKE '%time to think%' OR {r} ILIKE '%discuss%'
+          OR {r} ILIKE '%second opinion%' OR {r} ILIKE '%decide%' THEN 'Wants to buy later / needs time'
+        WHEN {r} ILIKE '%not interested%' OR {r} ILIKE '%not needed%' OR {r} ILIKE '%not required%'
+          OR {r} ILIKE '%are needed%' OR {r} ILIKE '%doesn%want%' OR {r} ILIKE '%don%want%'
+                                        THEN 'Not interested / not needed'
+        ELSE 'Other opt-out'
+    END"""
+
+
 # ── shared CTE chain ──────────────────────────────────────────────────────────
 # Read-only MCP/Data-API gotcha: every CTE referenced EXACTLY once, one linear
 # chain, no scalar subqueries (Redshift materialises multiply-referenced CTEs
@@ -215,6 +247,16 @@ reasons AS (
                     'Why doesn''t the patient require therapy? [For MH]')
     GROUP BY encounter_id
 ),
+optout AS (
+    SELECT encounter_id,
+        MAX(CASE WHEN preference_type = 'drug'         THEN {bucket('opt_out_reason')} END) AS opt_drug,
+        MAX(CASE WHEN preference_type = 'lab_test'     THEN {bucket('opt_out_reason')} END) AS opt_lab,
+        MAX(CASE WHEN preference_type = 'consultation' THEN {bucket('opt_out_reason')} END) AS opt_ther,
+        MAX(CASE WHEN preference_type = 'encounter'    THEN {bucket('opt_out_reason')} END) AS opt_enc
+    FROM allo_encounters.encounter_preferences
+    WHERE deleted_at IS NULL AND opt_out = 1 AND created_at >= '{SUB_START}'
+    GROUP BY encounter_id
+),
 base AS (
     SELECT app.id AS appt_id, app.patient_id,
         DATE_TRUNC('week', app.start_time + INTERVAL '5.5 hours')::date AS wk,
@@ -245,7 +287,11 @@ appt AS (
         MAX(COALESCE(f.ther_inv,0))                                 AS ther_inv,
         MAX(r.meds_norx)  AS meds_norx,
         MAX(r.tests_norx) AS tests_norx,
-        MAX(r.ther_norx)  AS ther_norx
+        MAX(r.ther_norx)  AS ther_norx,
+        MAX(o.opt_drug)   AS opt_drug,
+        MAX(o.opt_lab)    AS opt_lab,
+        MAX(o.opt_ther)   AS opt_ther,
+        MAX(o.opt_enc)    AS opt_enc
     FROM base b
     LEFT JOIN allo_encounters.encounters e
         ON e.appointment_id = b.appt_id AND e.deleted_at IS NULL AND e.created_at >= '{SUB_START}'
@@ -254,6 +300,7 @@ appt AS (
     LEFT JOIN ther_orders t ON t.encounter_id = e.id
     LEFT JOIN inv_flags   f ON f.encounter_id = e.id
     LEFT JOIN reasons     r ON r.encounter_id = e.id
+    LEFT JOIN optout      o ON o.encounter_id = e.id
     GROUP BY b.appt_id, b.patient_id, b.wk, b.provider_name, b.ctype
 )
 """
@@ -264,23 +311,26 @@ TABS = {
     "meds": """
         CASE
             WHEN a.meds_rx = 1 AND a.meds_conv = 1     THEN 'cv'
-            WHEN a.meds_rx = 1 AND a.meds_all_svc = 0  THEN 'nc:>=1 med not serviceable at clinic'
-            WHEN a.meds_rx = 1 AND a.meds_inv = 1      THEN 'nc:Invoice raised - unpaid'
-            WHEN a.meds_rx = 1                         THEN 'nc:No invoice raised'
+            WHEN a.meds_rx = 1 THEN 'nc:' || COALESCE(a.opt_drug, a.opt_enc,
+                CASE WHEN a.meds_all_svc = 0 THEN 'No opt-out logged - >=1 med not serviceable'
+                     WHEN a.meds_inv = 1     THEN 'No opt-out logged - invoice unpaid'
+                     ELSE 'No opt-out logged - no invoice' END)
             ELSE 'nr:' || COALESCE(a.meds_norx, 'No reason recorded')
         END""",
     "tests": """
         CASE
             WHEN a.tests_rx = 1 AND a.tests_conv = 1   THEN 'cv'
-            WHEN a.tests_rx = 1 AND a.tests_inv = 1    THEN 'nc:Invoice raised - unpaid'
-            WHEN a.tests_rx = 1                        THEN 'nc:No invoice raised'
+            WHEN a.tests_rx = 1 THEN 'nc:' || COALESCE(a.opt_lab, a.opt_enc,
+                CASE WHEN a.tests_inv = 1 THEN 'No opt-out logged - invoice unpaid'
+                     ELSE 'No opt-out logged - no invoice' END)
             ELSE 'nr:' || COALESCE(a.tests_norx, 'No reason recorded')
         END""",
     "therapy": """
         CASE
             WHEN a.ther_rx = 1 AND a.ther_conv = 1     THEN 'cv'
-            WHEN a.ther_rx = 1 AND a.ther_inv = 1      THEN 'nc:Invoice raised - unpaid'
-            WHEN a.ther_rx = 1                         THEN 'nc:No invoice raised'
+            WHEN a.ther_rx = 1 THEN 'nc:' || COALESCE(a.opt_ther, a.opt_enc,
+                CASE WHEN a.ther_inv = 1 THEN 'No opt-out logged - invoice unpaid'
+                     ELSE 'No opt-out logged - no invoice' END)
             ELSE 'nr:' || COALESCE(a.ther_norx, 'No reason recorded')
         END""",
 }
