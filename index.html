@@ -26,11 +26,20 @@
   .tabs{display:flex;gap:4px;margin-bottom:0;border-bottom:1px solid var(--line)}
   .tab{padding:9px 22px;font-weight:600;font-size:14px;color:var(--sub);cursor:pointer;border:1px solid transparent;border-bottom:none;border-radius:10px 10px 0 0;user-select:none}
   .tab.on{background:var(--card);border-color:var(--line);color:var(--accent);position:relative;top:1px}
-  .insights{background:var(--card);border:1px solid var(--line);border-bottom:none;border-radius:0 12px 0 0;padding:12px 18px}
-  .insights ul{list-style:none}
-  .insights li{margin:5px 0;color:#334155;font-size:12.8px;line-height:1.55}
-  .insights li b{color:var(--txt)}
-  .insights .ico{margin-right:7px}
+  .insights{background:var(--card);border:1px solid var(--line);border-bottom:none;border-radius:0 12px 0 0;padding:16px 20px;display:grid;grid-template-columns:1fr 1fr;gap:16px 40px}
+  @media (max-width:920px){.insights{grid-template-columns:1fr}}
+  .ipanel h3{font-size:14.5px;font-weight:700;letter-spacing:-.01em}
+  .ipanel .isub{color:var(--sub);font-size:12.5px;margin:3px 0 12px}
+  .irow{display:grid;grid-template-columns:minmax(150px,5fr) 6fr auto;align-items:center;gap:12px;margin:7px 0}
+  .irow .ilabel{font-size:12.8px;color:#334155;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .irow .itrack{height:10px;border-radius:5px;background:#eef1f6;overflow:hidden}
+  .irow .ifill{display:block;height:100%;border-radius:5px;min-width:3px}
+  .irow.rx .ifill{background:#f59e0b}
+  .irow.cv .ifill{background:var(--accent)}
+  .irow.nocap .ifill{background:#c3ccd8}
+  .irow.nocap .ilabel{color:var(--sub)}
+  .irow .ival{font-size:12px;color:var(--sub);white-space:nowrap;font-variant-numeric:tabular-nums}
+  .irow .ival b{color:var(--txt);font-size:12.8px}
   .tablewrap{background:var(--card);border:1px solid var(--line);border-radius:0 0 12px 12px;overflow:auto;max-height:78vh}
   table{border-collapse:separate;border-spacing:0;width:max-content;min-width:100%}
   th,td{padding:7px 12px;text-align:right;white-space:nowrap;border-bottom:1px solid var(--line);font-variant-numeric:tabular-nums}
@@ -195,99 +204,83 @@
     return v >= .5 ? 'hot' : (v >= .25 ? 'warm' : 'cool');
   }
 
-  // ── plain-language insights per tab, recomputed from the active filters ────
+  // ── insight panels: reason bar charts, recomputed from the active filters ──
+  // Friendly display names; several raw buckets merge into one bar. Unmapped
+  // buckets show as-is. "No reason captured" is always the grey bar at the bottom.
+  var NOCAP = 'No reason captured', OTHER = 'Other reasons';
+  var DISPLAY_NR = {
+    'Has meds already / remaining':'Patient already has medicines',
+    'Completely treated':'Patient treated / no treatment needed',
+    'Counseled - no treatment needed':'Patient treated / no treatment needed',
+    'Report reading / reports normal':'Report-reading / query / NE call',
+    'Query session':'Report-reading / query / NE call',
+    'Not eligible':'Report-reading / query / NE call',
+    'Referred out':'Referred out / needs specialist',
+    'Needs specialist outside Allo scope':'Referred out / needs specialist',
+    'Clinical dx sufficient (empirical Rx)':'Clinical diagnosis sufficient',
+    'Mild - meds/lifestyle sufficient':'Mild — meds/lifestyle enough',
+    'Patient not willing':'Patient not willing / doesn’t believe',
+    'Affordability':'Budget / price concerns',
+    'Not specified':OTHER, 'Other':OTHER,
+    'No reason recorded':NOCAP
+  };
+  var DISPLAY_NC = {
+    'Will buy / do it outside':'Will buy from outside',
+    'Budget / price':'Budget / price concerns',
+    'Not serviceable / no stock':'Stock unavailable',
+    'No opt-out logged - >=1 med not serviceable':'Stock unavailable',
+    'Not interested / not needed':'Not interested / doesn’t believe in it',
+    'Does not believe in therapy':'Not interested / doesn’t believe in it',
+    'Doctor marked optional':'Doctor marked it optional',
+    'Other opt-out':OTHER,
+    'Opt-out logged (no reason)':NOCAP,
+    'No opt-out logged - invoice unpaid':NOCAP,
+    'No opt-out logged - no invoice':NOCAP
+  };
+
+  function panel(title, sub, map, displayMap, denom, cls){
+    var agg = {};
+    Object.keys(map).forEach(function(k){
+      var lbl = displayMap[D.reasons[k]] || D.reasons[k];
+      agg[lbl] = (agg[lbl] || 0) + map[k];
+    });
+    var keys = Object.keys(agg).filter(function(l){ return l !== NOCAP; })
+                 .sort(function(a,b){ return agg[b]-agg[a]; });
+    // keep the top 6 named reasons, fold the tail into "Other reasons"
+    if(keys.length > 6){
+      var tail = keys.slice(6).filter(function(l){ return l !== OTHER; });
+      tail.forEach(function(l){ agg[OTHER] = (agg[OTHER] || 0) + agg[l]; delete agg[l]; });
+      keys = Object.keys(agg).filter(function(l){ return l !== NOCAP; })
+               .sort(function(a,b){ return agg[b]-agg[a]; });
+    }
+    if(agg[NOCAP]) keys.push(NOCAP);
+    var mx = keys.reduce(function(m,l){ return Math.max(m, agg[l]); }, 1);
+    var h = '<div class="ipanel"><h3>' + title + '</h3><div class="isub">' + sub + '</div>';
+    keys.forEach(function(l){
+      var v = agg[l], p = denom ? Math.round(100*v/denom) : 0;
+      h += '<div class="irow ' + (l === NOCAP ? 'nocap' : cls) + '">' +
+           '<div class="ilabel" title="' + l + '">' + l + '</div>' +
+           '<div class="itrack"><span class="ifill" style="width:' + Math.max(2, 100*v/mx) + '%"></span></div>' +
+           '<div class="ival"><b>' + v.toLocaleString('en-IN') + '</b> · ' + p + '%</div></div>';
+    });
+    return h + '</div>';
+  }
+
   function renderInsights(A, noun){
     var host = document.getElementById('insights');
     var t = A.tot, n = noun.toLowerCase();
     if(!t.calls){ host.innerHTML = ''; return; }
-    var items = [];
     function P(a,b){ return b ? Math.round(100*a/b) + '%' : '—'; }
-    function topOf(map, excludeFn){
-      return Object.keys(map).filter(function(k){ return !excludeFn || !excludeFn(D.reasons[k]); })
-        .sort(function(a,b){ return map[b]-map[a]; })
-        .map(function(k){ return {label:D.reasons[k], v:map[k]}; });
-    }
     var skips = t.calls - t.rx, notconv = t.rx - t.cv;
-
-    // 1 — why doctors don't prescribe
-    var line1 = 'Doctors prescribed ' + n + ' on <b>' + P(t.rx, t.calls) + '</b> of <b>' +
-                t.calls.toLocaleString('en-IN') + '</b> done calls';
-    if(skips > 0){
-      var recTop = topOf(t.nr, function(l){ return l === 'No reason recorded'; });
-      var noRec = t.nr[D.reasons.indexOf('No reason recorded')] || 0;
-      if(skips - noRec >= skips * 0.05 && recTop.length){
-        line1 += '. When they skipped, the top recorded reasons were <b>' + recTop[0].label.toLowerCase() +
-                 '</b> (' + P(recTop[0].v, skips) + ' of skips)' +
-                 (recTop[1] ? ' and <b>' + recTop[1].label.toLowerCase() + '</b> (' + P(recTop[1].v, skips) + ')' : '');
-        if(noRec / skips > 0.25) line1 += ' — though <b>' + P(noRec, skips) + '</b> of skips have no reason logged';
-      } else {
-        line1 += '; a reason for skipping is almost never logged (<b>' + P(noRec, skips) + '</b> of skips have none)';
-      }
-    }
-    items.push(['🩺', line1 + '.']);
-
-    // 2 — why patients don't purchase
-    if(t.rx > 0){
-      var line2 = '<b>' + P(t.cv, t.rx) + '</b> of prescribed calls purchased';
-      if(notconv > 0){
-        var isUnlogged = function(l){ return l.indexOf('No opt-out logged') === 0; };
-        var optTop = topOf(t.nc, isUnlogged);
-        var unlogged = 0, unpaid = 0;
-        Object.keys(t.nc).forEach(function(k){
-          var l = D.reasons[k];
-          if(isUnlogged(l)){ unlogged += t.nc[k]; if(l.indexOf('invoice unpaid') >= 0) unpaid += t.nc[k]; }
-        });
-        if(optTop.length){
-          line2 += '. Where the patient’s opt-out was captured, it is led by <b>' +
-                   optTop[0].label.toLowerCase() + '</b> (' + P(optTop[0].v, notconv) + ' of non-purchases)' +
-                   (optTop[1] ? ', then <b>' + optTop[1].label.toLowerCase() + '</b> (' + P(optTop[1].v, notconv) + ')' : '');
-        }
-        if(unlogged / notconv > 0.2){
-          line2 += '. <b>' + P(unlogged, notconv) + '</b> of non-purchases have no opt-out captured' +
-                   (unpaid / unlogged > 0.5 ? ' — mostly an invoice was raised but never paid' : '');
-        }
-      }
-      items.push(['💳', line2 + '.']);
-    }
-
-    // 3 — week-on-week movement (last full week vs previous 4 full weeks)
-    var currentMon = (function(){ var d=new Date(); d.setDate(d.getDate()-((d.getDay()+6)%7)); return d.toISOString().slice(0,10); })();
-    var full = A.weeks.filter(function(w,i){ return D.weeks[i] !== currentMon; });
-    var fullWks = D.weeks.filter(function(w){ return w !== currentMon; });
-    if(full.length >= 5){
-      var last = full[full.length-1], prev = full.slice(-5,-1);
-      var pv = prev.reduce(function(a,c){ a.calls+=c.calls; a.rx+=c.rx; a.cv+=c.cv; return a; }, {calls:0,rx:0,cv:0});
-      if(last.calls >= 50 && pv.calls > 0){
-        var lp = 100*(last.calls-last.rx)/last.calls, pp = 100*(pv.calls-pv.rx)/pv.calls;
-        var lc = last.rx ? 100*(last.rx-last.cv)/last.rx : 0, pc = pv.rx ? 100*(pv.rx-pv.cv)/pv.rx : 0;
-        var arrow = function(d){ return d > 1 ? '▲' : (d < -1 ? '▼' : '≈'); };
-        items.push(['📈', 'Last full week (wk of ' + fmtWk(fullWks[fullWks.length-1]) + '): not-prescribed <b>' +
-          lp.toFixed(1) + '%</b> ' + arrow(lp-pp) + ' vs <b>' + pp.toFixed(1) + '%</b> 4-week average; non-purchase <b>' +
-          lc.toFixed(1) + '%</b> ' + arrow(lc-pc) + ' vs <b>' + pc.toFixed(1) + '%</b>.']);
-      }
-    }
-
-    // 4 — channel gap (only when more than one channel is in view)
-    var grps = Object.keys(A.byGroup).filter(function(g){ return A.byGroup[g].rx >= 200; });
-    if(grps.length > 1){
-      grps.sort(function(a,b){ return A.byGroup[b].cv/A.byGroup[b].rx - A.byGroup[a].cv/A.byGroup[a].rx; });
-      var hi = A.byGroup[grps[0]], lo = A.byGroup[grps[grps.length-1]];
-      items.push(['🏥', 'Purchase rate is highest in <b>' + grps[0] + '</b> (' + P(hi.cv, hi.rx) +
-                  ' of prescribed) and lowest in <b>' + grps[grps.length-1] + '</b> (' + P(lo.cv, lo.rx) + ').']);
-    }
-
-    // 5 — diagnosis gap (only when no diagnosis filter narrows the view)
-    var dgs = Object.keys(A.byDiag).filter(function(d){ return A.byDiag[d].calls >= 300; });
-    if(state.diags.size === 0 && dgs.length > 1){
-      dgs.sort(function(a,b){ return A.byDiag[b].rx/A.byDiag[b].calls - A.byDiag[a].rx/A.byDiag[a].calls; });
-      var dh = A.byDiag[dgs[0]], dl = A.byDiag[dgs[dgs.length-1]];
-      items.push(['🧬', 'By diagnosis, ' + n + (n === 'therapy' ? ' is' : ' are') + ' prescribed most often for <b>' + dgs[0] + '</b> (' + P(dh.rx, dh.calls) +
-                  ' of calls) and least for <b>' + dgs[dgs.length-1] + '</b> (' + P(dl.rx, dl.calls) + ').']);
-    }
-
-    host.innerHTML = '<ul>' + items.map(function(it){
-      return '<li><span class="ico">' + it[0] + '</span>' + it[1] + '</li>';
-    }).join('') + '</ul>';
+    host.innerHTML =
+      panel('🩺 Why doctors don’t prescribe ' + n,
+            skips.toLocaleString('en-IN') + ' of ' + t.calls.toLocaleString('en-IN') +
+            ' calls (' + P(skips, t.calls) + ') had no ' + n + ' prescribed',
+            t.nr, DISPLAY_NR, skips, 'rx') +
+      panel('🛒 Why patients don’t purchase ' + n,
+            notconv.toLocaleString('en-IN') + ' of ' + t.rx.toLocaleString('en-IN') +
+            ' prescribed calls (' + P(notconv, t.rx) + ') didn’t buy',
+            t.nc, DISPLAY_NC, notconv, 'cv');
   }
 
   function render(){
