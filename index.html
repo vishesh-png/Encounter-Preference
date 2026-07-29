@@ -94,7 +94,12 @@
   document.getElementById('updated').textContent = 'Updated ' + D.updated;
 
   var TABS = [ {id:0,key:'Meds',noun:'Meds'}, {id:1,key:'Tests',noun:'Tests'}, {id:2,key:'Therapy',noun:'Therapy'} ];
-  var CTYPE_LABELS = {'Offline SC':'Offline SC','Online SC':'Online SC','FU':'Repeat · FU','PQ':'Repeat · PQ','RR':'Repeat · RR'};
+  // Repeat = FU + PQ + RR as one filter option (data keeps them separate underneath)
+  var CTYPE_GROUPS = [
+    {label:'Offline SC', vals:['Offline SC']},
+    {label:'Online SC',  vals:['Online SC']},
+    {label:'Repeat (FU · PQ · RR)', vals:['FU','PQ','RR']}
+  ];
 
   var state = { tab:0, provider:'', ctypes:new Set(), diags:new Set(),
                 openNR:false, openNC:false };
@@ -106,15 +111,17 @@
   });
   provSel.onchange = function(){ state.provider = provSel.value; render(); };
 
-  function buildChips(hostId, values, labels, sel){
+  function buildChips(hostId, groups, sel){
     var host = document.getElementById(hostId);
+    var allVals = groups.reduce(function(a,g){ return a.concat(g.vals); }, []);
     var all = document.createElement('span'); all.className = 'chip on'; all.textContent = 'All';
     host.appendChild(all);
-    var chips = values.map(function(v){
-      var c = document.createElement('span'); c.className = 'chip'; c.textContent = labels ? labels[v] : v;
+    var chips = groups.map(function(g){
+      var c = document.createElement('span'); c.className = 'chip'; c.textContent = g.label;
       c.onclick = function(){
-        if(sel.has(v)) sel.delete(v); else sel.add(v);
-        if(sel.size === values.length) sel.clear();
+        var on = g.vals.every(function(v){ return sel.has(v); });
+        g.vals.forEach(function(v){ if(on) sel.delete(v); else sel.add(v); });
+        if(sel.size === allVals.length) sel.clear();
         sync(); render();
       };
       host.appendChild(c); return c;
@@ -122,11 +129,13 @@
     all.onclick = function(){ sel.clear(); sync(); render(); };
     function sync(){
       all.classList.toggle('on', sel.size === 0);
-      chips.forEach(function(c,i){ c.classList.toggle('on', sel.has(values[i])); });
+      chips.forEach(function(c,i){
+        c.classList.toggle('on', groups[i].vals.every(function(v){ return sel.has(v); }));
+      });
     }
   }
-  buildChips('ctypeChips', D.ctypes, CTYPE_LABELS, state.ctypes);
-  buildChips('diagChips', D.diags, null, state.diags);
+  buildChips('ctypeChips', CTYPE_GROUPS, state.ctypes);
+  buildChips('diagChips', D.diags.map(function(d){ return {label:d, vals:[d]}; }), state.diags);
 
   // ── tabs ───────────────────────────────────────────────────────
   var tabsHost = document.getElementById('tabs');
