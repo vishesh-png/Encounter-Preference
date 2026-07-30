@@ -98,6 +98,7 @@
 
   <div class="foot">
     <b>Definitions.</b> Calls done = COMPLETED/RECONSULTED appointments (Screening Call offline/online; Repeat = Follow&nbsp;Up, Patient&nbsp;Queries, Report&nbsp;Reading).
+    Eligible calls done = calls where the prescription has at least one item of any kind (meds, tests or therapy) — the funnel below runs on eligible calls.
     Prescribed = the call's encounter carries at least one order of the tab's kind (meds = drug Rx line, tests = lab test order, therapy = therapy Rx).
     Converted = paid invoice with a drug / lab item on that encounter; therapy = therapy order consumed or therapy invoice paid.
     Not-prescribed reasons come from the doctor's form answer on the encounter. Not-converted reasons are the patient's opt-out reason from encounter preferences (drug / lab-test / therapy level, falling back to the encounter-level opt-out); where no opt-out is logged, the billing funnel is shown (med serviceability, invoice raised-but-unpaid, no invoice).
@@ -174,22 +175,22 @@
     // per week: {calls, rx, cv, nc:{}, nr:{}} + same for 'tot'
     var W = D.weeks.length, out = [], tot = mk(), byGroup = {}, byDiag = {};
     for(var i=0;i<W;i++) out.push(mk());
-    function mk(){ return {calls:0, rx:0, cv:0, nc:{}, nr:{}}; }
+    function mk(){ return {calls:0, elig:0, rx:0, cv:0, nc:{}, nr:{}}; }
     D.rows.forEach(function(r){
       if(state.provider !== '' && r[1] !== +state.provider) return;
       if(state.ctypes.size && !state.ctypes.has(D.ctypes[r[2]])) return;
       if(state.diags.size && !state.diags.has(D.diags[r[3]])) return;
-      var pack = r[5 + state.tab];           // [rx, cv, nc pairs, nr pairs]
+      var pack = r[6 + state.tab];           // [rx, cv, nc pairs, nr pairs]
       [out[r[0]], tot].forEach(function(cell){
-        cell.calls += r[4]; cell.rx += pack[0]; cell.cv += pack[1];
+        cell.calls += r[4]; cell.elig += r[5]; cell.rx += pack[0]; cell.cv += pack[1];
         pack[2].forEach(function(p){ cell.nc[p[0]] = (cell.nc[p[0]]||0) + p[1]; });
         pack[3].forEach(function(p){ cell.nr[p[0]] = (cell.nr[p[0]]||0) + p[1]; });
       });
       var ct = D.ctypes[r[2]];
       var grp = CTYPE_GROUPS.filter(function(g){ return g.vals.indexOf(ct) >= 0; })[0].label;
       [ [byGroup, grp], [byDiag, D.diags[r[3]]] ].forEach(function(x){
-        var m = x[0][x[1]] || (x[0][x[1]] = {calls:0, rx:0, cv:0});
-        m.calls += r[4]; m.rx += pack[0]; m.cv += pack[1];
+        var m = x[0][x[1]] || (x[0][x[1]] = {calls:0, elig:0, rx:0, cv:0});
+        m.calls += r[4]; m.elig += r[5]; m.rx += pack[0]; m.cv += pack[1];
       });
     });
     return {weeks:out, tot:tot, byGroup:byGroup, byDiag:byDiag};
@@ -278,11 +279,11 @@
     var t = A.tot, n = noun.toLowerCase();
     if(!t.calls){ host.innerHTML = ''; return; }
     function P(a,b){ return b ? Math.round(100*a/b) + '%' : '—'; }
-    var skips = t.calls - t.rx, notconv = t.rx - t.cv;
+    var skips = t.elig - t.rx, notconv = t.rx - t.cv;
     host.innerHTML =
       panel('🩺 Why doctors don’t prescribe ' + n,
-            skips.toLocaleString('en-IN') + ' of ' + t.calls.toLocaleString('en-IN') +
-            ' calls (' + P(skips, t.calls) + ') had no ' + n + ' prescribed',
+            skips.toLocaleString('en-IN') + ' of ' + t.elig.toLocaleString('en-IN') +
+            ' eligible calls (' + P(skips, t.elig) + ') had no ' + n + ' prescribed',
             t.nr, DISPLAY_NR, skips, 'rx') +
       panel('🛒 Why patients don’t purchase ' + n,
             notconv.toLocaleString('en-IN') + ' of ' + t.rx.toLocaleString('en-IN') +
@@ -320,16 +321,17 @@
     }
 
     h += row('Total calls done', num(function(c){return c.calls;}), 'metric-strong');
+    h += row('Eligible calls done', num(function(c){return c.elig;}), 'metric-strong');
     h += row(noun + ' prescribed', num(function(c){return c.rx;}));
-    h += row('Not prescribed', num(function(c){return c.calls - c.rx;}));
-    h += row('Not prescribed %', pctCell(function(c){return c.calls-c.rx;}, function(c){return c.calls;}), 'pctrow');
+    h += row('Not prescribed', num(function(c){return c.elig - c.rx;}));
+    h += row('Not prescribed %', pctCell(function(c){return c.elig-c.rx;}, function(c){return c.elig;}), 'pctrow');
 
     // reasons: not prescribed
     var nrKeys = Object.keys(A.tot.nr).sort(function(a,b){ return A.tot.nr[b]-A.tot.nr[a]; });
     h += '<tr class="reason-toggle' + (state.openNR?' open':'') + '" data-t="nr"><th><span class="tri">▶</span>Reasons — not prescribed (' + nrKeys.length + ')</th><td class="totcol"></td>' + '<td></td>'.repeat(W) + '</tr>';
     if(state.openNR){
       nrKeys.forEach(function(k){
-        h += row(D.reasons[k] + ' <span style="opacity:.7">(' + pct(A.tot.nr[k], A.tot.calls - A.tot.rx) + ')</span>',
+        h += row(D.reasons[k] + ' <span style="opacity:.7">(' + pct(A.tot.nr[k], A.tot.elig - A.tot.rx) + ')</span>',
                  num(function(c){return c.nr[k]||0;}), 'reason-row');
       });
     }

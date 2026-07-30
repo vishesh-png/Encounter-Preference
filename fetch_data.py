@@ -367,28 +367,35 @@ TABS = {
 
 
 def tab_sql(status_expr):
+    # elig = the call carries at least one prescribed item of ANY kind
+    # (meds, tests or therapy) — the funnel denominator for every tab.
     return SHARED + f"""
 SELECT a.wk::varchar AS wk, a.provider_name, a.ctype,
        COALESCE(pd.diag_cat, 'Others') AS diag,
+       GREATEST(a.meds_rx, a.tests_rx, a.ther_rx) AS elig,
        {status_expr} AS status,
        COUNT(*) AS n
 FROM appt a
 LEFT JOIN paperform_diag pd ON pd.patient_id = a.patient_id
-GROUP BY 1, 2, 3, 4, 5
+GROUP BY 1, 2, 3, 4, 5, 6
 """
 
 
 def main():
-    grain = {}          # (wk, prov, ctype, diag) -> {tab: {"cv":n, "nc":{r:n}, "nr":{r:n}}}
+    # (wk, prov, ctype, diag) -> {tab: {"cv":n, "nc":{r:n}, "nr":{r:n}, "ne":n}}
+    # "ne" = not eligible (no item of any kind prescribed) — excluded from the funnel
+    grain = {}
     tab_totals = {}
     for tab, expr in TABS.items():
         rows = run_query(tab_sql(expr), tab)
         tot = 0
-        for wk, prov, ctype, diag, status, n in rows:
+        for wk, prov, ctype, diag, elig, status, n in rows:
             key = (wk, prov, ctype, diag)
-            cell = grain.setdefault(key, {}).setdefault(tab, {"cv": 0, "nc": {}, "nr": {}})
+            cell = grain.setdefault(key, {}).setdefault(tab, {"cv": 0, "nc": {}, "nr": {}, "ne": 0})
             tot += n
-            if status == "cv":
+            if not elig:
+                cell["ne"] += n
+            elif status == "cv":
                 cell["cv"] += n
             elif status.startswith("nc:"):
                 r = status[3:]; cell["nc"][r] = cell["nc"].get(r, 0) + n
@@ -418,17 +425,20 @@ def main():
     rows_out = []
     for (wk, prov, ctype, diag), tabs in sorted(grain.items()):
         calls = 0
+        elig = 0
         packed = []
         for tab in ("meds", "tests", "therapy"):
-            c = tabs.get(tab, {"cv": 0, "nc": {}, "nr": {}})
+            c = tabs.get(tab, {"cv": 0, "nc": {}, "nr": {}, "ne": 0})
             nc = [[rix(r), n] for r, n in sorted(c["nc"].items(), key=lambda x: -x[1])]
             nr = [[rix(r), n] for r, n in sorted(c["nr"].items(), key=lambda x: -x[1])]
             n_nc = sum(n for _, n in nc)
             n_nr = sum(n for _, n in nr)
-            calls = max(calls, c["cv"] + n_nc + n_nr)   # max across tabs absorbs live drift
+            tab_elig = c["cv"] + n_nc + n_nr
+            elig = max(elig, tab_elig)                    # max across tabs absorbs live drift
+            calls = max(calls, tab_elig + c["ne"])
             packed.append([c["cv"] + n_nc, c["cv"], nc, nr])   # [rx, converted, nc-reasons, nr-reasons]
         rows_out.append([weeks.index(wk), provs.index(prov), ctypes.index(ctype),
-                         diags.index(diag), calls] + packed)
+                         diags.index(diag), calls, elig] + packed)
 
     ist = dt.datetime.utcnow() + dt.timedelta(hours=5, minutes=30)
     payload = {
