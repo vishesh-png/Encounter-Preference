@@ -330,6 +330,7 @@
 
     h += row('Total calls done', num(function(c){return c.calls;}), 'metric-strong');
     h += row('Eligible calls done', num(function(c){return c.elig;}), 'metric-strong');
+    h += row('Not eligible %', pctCell(function(c){return c.calls-c.elig;}, function(c){return c.calls;}), 'pctrow');
     h += row(noun + ' prescribed', num(function(c){return c.rx;}));
     h += row('Not prescribed', num(function(c){return c.elig - c.rx;}));
     h += row('Not prescribed %', pctCell(function(c){return c.elig-c.rx;}, function(c){return c.elig;}), 'pctrow');
