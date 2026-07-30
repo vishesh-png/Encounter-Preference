@@ -232,6 +232,14 @@
     'Other':OTHER,
     'No reason recorded':NOCAP
   };
+  // plain-language names for the billing-funnel fallback buckets in the weekly table
+  var TABLE_LABELS = {
+    'No opt-out logged - invoice unpaid':'Bill raised but never paid (patient gave no reason)',
+    'No opt-out logged - no invoice':'No bill ever raised (patient gave no reason)',
+    'No opt-out logged - >=1 med not serviceable':'Med not in stock at clinic (no reason logged)',
+    'Opt-out logged (no reason)':'Opt-out logged without a reason'
+  };
+  function tableLabel(raw){ return TABLE_LABELS[raw] || raw; }
   var DISPLAY_NC = {
     'Will buy / do it outside':'Will buy from outside',
     'Budget / price':'Budget / price concerns',
@@ -331,7 +339,7 @@
     h += '<tr class="reason-toggle' + (state.openNR?' open':'') + '" data-t="nr"><th><span class="tri">▶</span>Reasons — not prescribed (' + nrKeys.length + ')</th><td class="totcol"></td>' + '<td></td>'.repeat(W) + '</tr>';
     if(state.openNR){
       nrKeys.forEach(function(k){
-        h += row(D.reasons[k] + ' <span style="opacity:.7">(' + pct(A.tot.nr[k], A.tot.elig - A.tot.rx) + ')</span>',
+        h += row(tableLabel(D.reasons[k]) + ' <span style="opacity:.7">(' + pct(A.tot.nr[k], A.tot.elig - A.tot.rx) + ')</span>',
                  num(function(c){return c.nr[k]||0;}), 'reason-row');
       });
     }
@@ -343,7 +351,7 @@
     h += '<tr class="reason-toggle' + (state.openNC?' open':'') + '" data-t="nc"><th><span class="tri">▶</span>Reasons — not converted (' + ncKeys.length + ')</th><td class="totcol"></td>' + '<td></td>'.repeat(W) + '</tr>';
     if(state.openNC){
       ncKeys.forEach(function(k){
-        h += row(D.reasons[k] + ' <span style="opacity:.7">(' + pct(A.tot.nc[k], A.tot.rx - A.tot.cv) + ')</span>',
+        h += row(tableLabel(D.reasons[k]) + ' <span style="opacity:.7">(' + pct(A.tot.nc[k], A.tot.rx - A.tot.cv) + ')</span>',
                  num(function(c){return c.nc[k]||0;}), 'reason-row');
       });
     }
