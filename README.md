@@ -12,7 +12,7 @@ Week-on-week tracker of what doctors prescribe on done calls — **Meds / Tests 
 | Total calls done | COMPLETED/RECONSULTED appointments — Screening Call (offline/online) + Repeat (Follow Up, Patient Queries, Report Reading) |
 | Prescribed | Call's encounter carries ≥1 order of the tab's kind (meds = `allo_drugs.orders`, tests = `allo_labs.orders`, therapy = `allo_consultations.orders` with Therapy consultation type) |
 | Not prescribed % | Not prescribed ÷ calls done |
-| Reasons — not prescribed | Doctor's paperform answer on the encounter, bucketed (e.g. "Has meds already / remaining", "Deferred to follow-up") |
+| Reasons — not prescribed | Doctor's paperform answer on the encounter, bucketed. Meds: "Reason for not prescribing a recommended medication" (per-drug DSS skip JSON). Tests: "Why were no diagnostic tests recommended?". Therapy: "Why is therapy not being recommended?" + "Why is therapy beneficial but not essential for this patient?" + "Why doesn't the patient believe in therapy?" |
 | Converted | Paid invoice with drug / lab item on the encounter; therapy = order consumed (`remaining_quantity < quantity`) or paid therapy invoice item |
 | Not converted % | Not converted ÷ prescribed |
 | Reasons — not converted | Patient opt-out reason from `allo_encounters.encounter_preferences` (`preference_type` drug / lab_test / consultation, falling back to encounter-level opt-out), bucketed. Where no opt-out is logged: billing funnel (≥1 med not serviceable / invoice raised-but-unpaid / no invoice) |

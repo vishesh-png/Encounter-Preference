@@ -187,24 +187,25 @@ inv_flags AS (
 ),
 reasons AS (
     SELECT encounter_id,
-        MAX(CASE WHEN title IN ('Why does the patient not need a prescription?',
-                                'What is the reason for the patient not needing a prescription?') THEN
+        -- meds: per-drug DSS skip question; value is a JSON array of
+        -- skipped_drug/reason objects, so bucket on the raw string
+        MAX(CASE WHEN title = 'Reason for not prescribing a recommended medication' THEN
             CASE
-                WHEN value ILIKE '%remain%' OR value ILIKE '%has med%' OR value ILIKE '%have med%'
-                  OR value ILIKE '%already%' OR value ILIKE '%medicines are there%'
-                  OR value ILIKE '%rx complete%' OR LOWER(TRIM(value)) IN ('has','rm')
-                                                                THEN 'Has meds already / remaining'
-                WHEN value ILIKE '%treat%'                      THEN 'Completely treated'
-                WHEN value ILIKE '%report%' OR LOWER(TRIM(value)) LIKE 'rr%'
-                  OR value ILIKE '%wnl%' OR value ILIKE '%normal%' OR value ILIKE '%negative%'
-                                                                THEN 'Report reading / reports normal'
-                WHEN LOWER(TRIM(value)) LIKE 'pq%' OR value ILIKE '%quer%'
-                  OR LOWER(TRIM(value)) LIKE 'pt q%'            THEN 'Query session'
-                WHEN value ILIKE '%refer%'                      THEN 'Referred out'
-                WHEN value ILIKE '%eligib%' OR LOWER(TRIM(value)) IN ('ne','n/e')
-                                                                THEN 'Not eligible'
-                WHEN value ILIKE '%counsel%'                    THEN 'Counseled - no treatment needed'
-                WHEN LEN(TRIM(value)) <= 3                      THEN 'Not specified'
+                WHEN value ILIKE '%not clinically indicated%'   THEN 'Not clinically indicated'
+                WHEN value ILIKE '%already on equivalent%' OR value ILIKE '%already%'
+                                                                THEN 'Already on equivalent medication'
+                WHEN value ILIKE '%deferred%' OR value ILIKE '%lifestyle%'
+                  OR value ILIKE '%therapy-first%' OR value ILIKE '%therapy advised%'
+                                                                THEN 'Deferred - lifestyle/therapy first'
+                WHEN value ILIKE '%awaiting test%' OR value ILIKE '%test result%'
+                  OR value ILIKE '%waiting%'                    THEN 'Awaiting test results'
+                WHEN value ILIKE '%contraindication%' OR value ILIKE '%allergy%'
+                  OR value ILIKE '%adverse%' OR value ILIKE '%side effect%'
+                                                                THEN 'Contraindication / adverse reaction'
+                WHEN value ILIKE '%cost%' OR value ILIKE '%expense%' OR value ILIKE '%cheaper%'
+                                                                THEN 'Cost concerns'
+                WHEN value ILIKE '%not required%' OR value ILIKE '%not needed%'
+                  OR value ILIKE '%not requiring%'              THEN 'Not required'
                 ELSE 'Other'
             END END) AS meds_norx,
         MAX(CASE WHEN title = 'Why were no diagnostic tests recommended?' THEN
@@ -219,32 +220,36 @@ reasons AS (
                 ELSE 'Other'
             END END) AS tests_norx,
         MAX(CASE WHEN title IN ('Why is therapy not being recommended?',
-                                'Why doesn''t the patient require therapy? [For MH]') THEN
+                                'Why is therapy beneficial but not essential for this patient?',
+                                'Why doesn''t the patient believe in therapy?') THEN
             CASE
-                WHEN value ILIKE '%not clinically indicated%' OR value ILIKE '%not eligible%'
-                  OR value ILIKE '%condition not eligible%'     THEN 'Not clinically indicated / eligible'
-                WHEN value ILIKE '%defer%' OR value ILIKE '%prescribe in fu%'
-                  OR value ILIKE '%reassess%' OR value ILIKE '%follow%'
-                                                                THEN 'Deferred to follow-up'
-                WHEN value ILIKE '%mild%' OR value ILIKE '%lifestyle%'
-                                                                THEN 'Mild - meds/lifestyle sufficient'
-                WHEN value ILIKE '%not willing%' OR value ILIKE '%believe%'
-                                                                THEN 'Patient not willing'
+                WHEN value ILIKE '%not clinically indicated%'   THEN 'Not clinically indicated'
+                WHEN value ILIKE '%defer%' OR value ILIKE '%reassess%' OR value ILIKE '%follow%'
+                                                                THEN 'Deferred - reassess at follow-up'
+                WHEN value ILIKE '%mild%'                       THEN 'Mild - meds/lifestyle enough'
                 WHEN value ILIKE '%scope%' OR value ILIKE '%specialist%'
-                                                                THEN 'Needs specialist outside Allo scope'
-                WHEN value ILIKE '%elsewhere%' OR value ILIKE '%seeing a therapist%'
-                  OR value ILIKE '%receiving%' OR value ILIKE '%already%' OR value ILIKE '%outside%'
-                                                                THEN 'Already in therapy elsewhere'
+                                                                THEN 'Needs outside specialist'
+                WHEN value ILIKE '%already%' OR value ILIKE '%receiving%'
+                  OR value ILIKE '%elsewhere%' OR value ILIKE '%pending session%'
+                                                                THEN 'Already in / had therapy'
+                WHEN value ILIKE '%supports%' OR value ILIKE '%strengthens%' OR value ILIKE '%sustains%'
+                  OR value ILIKE '%relationship%' OR value ILIKE '%couple%' OR value ILIKE '%coping%'
+                  OR value ILIKE '%anxiety%' OR value ILIKE '%relapse%'
+                                                                THEN 'Beneficial but optional - supports meds'
+                WHEN value ILIKE '%medication first%' OR value ILIKE '%meds first%'
+                                                                THEN 'Patient prefers meds first'
+                WHEN value ILIKE '%skeptical%' OR value ILIKE '%stigma%' OR value ILIKE '%privacy%'
+                                                                THEN 'Skeptical / stigma concerns'
                 WHEN value ILIKE '%afford%'                     THEN 'Affordability'
                 ELSE 'Other'
             END END) AS ther_norx
     FROM allo_health.paperform_qa
     WHERE deleted_at IS NULL AND created_at >= '{SUB_START}'
-      AND title IN ('Why does the patient not need a prescription?',
-                    'What is the reason for the patient not needing a prescription?',
+      AND title IN ('Reason for not prescribing a recommended medication',
                     'Why were no diagnostic tests recommended?',
                     'Why is therapy not being recommended?',
-                    'Why doesn''t the patient require therapy? [For MH]')
+                    'Why is therapy beneficial but not essential for this patient?',
+                    'Why doesn''t the patient believe in therapy?')
     GROUP BY encounter_id
 ),
 optout AS (
