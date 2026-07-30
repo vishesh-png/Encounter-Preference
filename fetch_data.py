@@ -208,6 +208,28 @@ reasons AS (
                   OR value ILIKE '%not requiring%'              THEN 'Not required'
                 ELSE 'Other'
             END END) AS meds_norx,
+        -- fallback when the DSS skip question wasn't answered: the broader
+        -- "no prescription needed" question (free text, covers ~48% of zero-med calls)
+        MAX(CASE WHEN title IN ('Why does the patient not need a prescription?',
+                                'What is the reason for the patient not needing a prescription?') THEN
+            CASE
+                WHEN value ILIKE '%remain%' OR value ILIKE '%has med%' OR value ILIKE '%have med%'
+                  OR value ILIKE '%already%' OR value ILIKE '%medicines are there%'
+                  OR value ILIKE '%rx complete%' OR LOWER(TRIM(value)) IN ('has','rm')
+                                                                THEN 'Has meds already / remaining'
+                WHEN value ILIKE '%treat%'                      THEN 'Completely treated'
+                WHEN value ILIKE '%report%' OR LOWER(TRIM(value)) LIKE 'rr%'
+                  OR value ILIKE '%wnl%' OR value ILIKE '%normal%' OR value ILIKE '%negative%'
+                                                                THEN 'Report reading / reports normal'
+                WHEN LOWER(TRIM(value)) LIKE 'pq%' OR value ILIKE '%quer%'
+                  OR LOWER(TRIM(value)) LIKE 'pt q%'            THEN 'Query session'
+                WHEN value ILIKE '%refer%'                      THEN 'Referred out'
+                WHEN value ILIKE '%eligib%' OR LOWER(TRIM(value)) IN ('ne','n/e')
+                                                                THEN 'Not eligible'
+                WHEN value ILIKE '%counsel%'                    THEN 'Counseled - no treatment needed'
+                WHEN LEN(TRIM(value)) <= 3                      THEN 'Not specified'
+                ELSE 'Other'
+            END END) AS meds_norx_fb,
         MAX(CASE WHEN title = 'Why were no diagnostic tests recommended?' THEN
             CASE
                 WHEN value ILIKE '%not clinically indicated%'   THEN 'Not clinically indicated'
@@ -246,6 +268,8 @@ reasons AS (
     FROM allo_health.paperform_qa
     WHERE deleted_at IS NULL AND created_at >= '{SUB_START}'
       AND title IN ('Reason for not prescribing a recommended medication',
+                    'Why does the patient not need a prescription?',
+                    'What is the reason for the patient not needing a prescription?',
                     'Why were no diagnostic tests recommended?',
                     'Why is therapy not being recommended?',
                     'Why is therapy beneficial but not essential for this patient?',
@@ -291,6 +315,7 @@ appt AS (
         MAX(GREATEST(COALESCE(t.consumed,0), COALESCE(f.ther_paid,0))) AS ther_conv,
         MAX(COALESCE(f.ther_inv,0))                                 AS ther_inv,
         MAX(r.meds_norx)  AS meds_norx,
+        MAX(r.meds_norx_fb) AS meds_norx_fb,
         MAX(r.tests_norx) AS tests_norx,
         MAX(r.ther_norx)  AS ther_norx,
         MAX(o.opt_drug)   AS opt_drug,
@@ -320,7 +345,7 @@ TABS = {
                 CASE WHEN a.meds_all_svc = 0 THEN 'No opt-out logged - >=1 med not serviceable'
                      WHEN a.meds_inv = 1     THEN 'No opt-out logged - invoice unpaid'
                      ELSE 'No opt-out logged - no invoice' END)
-            ELSE 'nr:' || COALESCE(a.meds_norx, 'No reason recorded')
+            ELSE 'nr:' || COALESCE(a.meds_norx, a.meds_norx_fb, 'No reason recorded')
         END""",
     "tests": """
         CASE
