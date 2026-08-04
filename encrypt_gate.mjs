@@ -46,13 +46,17 @@ button{width:100%;margin-top:12px;padding:12px;border:0;border-radius:10px;backg
 button:hover{background:#1d4ed8}
 .err{color:#f08a80;font-size:13px;min-height:18px;margin-top:10px}
 .ft{color:#6b7688;font-size:11px;margin-top:16px}
+#gate[hidden]{display:none}
+#load{font-size:30px;opacity:.5;animation:pulse 1.1s ease-in-out infinite}
+@keyframes pulse{0%,100%{opacity:.25}50%{opacity:.7}}
 </style></head><body>
-<div class="box" id="gate">
+<div id="load">🔒</div>
+<div class="box" id="gate" hidden>
   <div class="lock">🔒</div>
   <h1>Allo Clinic Trackers</h1>
   <p>Enter password to view</p>
   <form id="gf" autocomplete="off">
-    <input type="password" id="pw" placeholder="Password" autofocus autocomplete="current-password">
+    <input type="password" id="pw" placeholder="Password" autocomplete="current-password">
     <button type="submit">Unlock</button>
     <div class="err" id="err"></div>
   </form>
@@ -82,8 +86,15 @@ document.getElementById('gf').addEventListener('submit',async e=>{
   if(!ok){document.getElementById('err').textContent='Wrong password';btn.disabled=false;btn.textContent='Unlock';
     document.getElementById('pw').select();}
 });
-// single sign-in: if already unlocked this session on this origin, open automatically
-(async()=>{let p;try{p=sessionStorage.getItem(SK);}catch(e){}if(p)await unlock(p);})();
+function showGate(){document.getElementById('load').remove();const g=document.getElementById('gate');g.hidden=false;document.getElementById('pw').focus();}
+// Ask once per tab: while the tab stays open (incl. tab-switches and in-tab reloads)
+// sessionStorage keeps the password, so we unlock silently with no flash of the prompt.
+// Closing the tab clears sessionStorage, so reopening asks again.
+(async()=>{
+  let p;try{p=sessionStorage.getItem(SK);}catch(e){}
+  if(p && await unlock(p)) return;   // silent unlock — prompt never shown
+  showGate();                        // only reached when there is no valid session
+})();
 </script></body></html>`;
 
 fs.writeFileSync(OUTP, gate);
