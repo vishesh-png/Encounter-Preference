@@ -152,21 +152,49 @@ paperform_diag AS (
     WHERE rnk = 1
 ),
 drug_orders AS (
-    SELECT o.encounter_id, MIN(COALESCE(inv.is_verified,0)) AS all_svc
+    -- importance_level: 'Essentials' vs 'Recommended' (Recommended tier live since ~Jul 2026;
+    -- NULL treated as essential). Item-level purchase = paid invoice item with type_id = drug_id.
+    SELECT o.encounter_id,
+        MIN(COALESCE(inv.is_verified,0)) AS all_svc,
+        MAX(CASE WHEN o.importance_level = 'Recommended' THEN 1 ELSE 0 END) AS has_rec,
+        MAX(CASE WHEN COALESCE(o.importance_level,'Essentials') <> 'Recommended' THEN 1 ELSE 0 END) AS has_ess,
+        MAX(CASE WHEN o.importance_level = 'Recommended' AND pi.type_id IS NOT NULL THEN 1 ELSE 0 END) AS rec_paid,
+        MAX(CASE WHEN COALESCE(o.importance_level,'Essentials') <> 'Recommended' AND pi.type_id IS NOT NULL THEN 1 ELSE 0 END) AS ess_paid
     FROM allo_drugs.orders o
     LEFT JOIN allo_drugs.inventory inv ON inv.id = o.drug_id
+    LEFT JOIN (
+        SELECT DISTINCT i.encounter_id, ii.type_id
+        FROM allo_billing.invoices i
+        JOIN allo_billing.invoice_items ii ON ii.invoice_id = i.id AND ii.deleted_at IS NULL AND ii.type = 'drug'
+        WHERE i.deleted_at IS NULL AND i.status = 'paid' AND i.created_at >= '{SUB_START}'
+    ) pi ON pi.encounter_id = o.encounter_id AND pi.type_id = o.drug_id
     WHERE o.deleted_at IS NULL AND o.created_at >= '{SUB_START}'
     GROUP BY o.encounter_id
 ),
 lab_orders AS (
-    SELECT encounter_id, COUNT(*) AS n
-    FROM allo_labs.orders
-    WHERE deleted_at IS NULL AND created_at >= '{SUB_START}'
-    GROUP BY encounter_id
+    SELECT o.encounter_id, COUNT(*) AS n,
+        MAX(CASE WHEN o.importance_level = 'Recommended' THEN 1 ELSE 0 END) AS has_rec,
+        MAX(CASE WHEN COALESCE(o.importance_level,'Essentials') <> 'Recommended' THEN 1 ELSE 0 END) AS has_ess,
+        MAX(CASE WHEN o.importance_level = 'Recommended' AND pi.type_id IS NOT NULL THEN 1 ELSE 0 END) AS rec_paid,
+        MAX(CASE WHEN COALESCE(o.importance_level,'Essentials') <> 'Recommended' AND pi.type_id IS NOT NULL THEN 1 ELSE 0 END) AS ess_paid
+    FROM allo_labs.orders o
+    LEFT JOIN (
+        SELECT DISTINCT i.encounter_id, ii.type_id
+        FROM allo_billing.invoices i
+        JOIN allo_billing.invoice_items ii ON ii.invoice_id = i.id AND ii.deleted_at IS NULL AND ii.type = 'lab'
+        WHERE i.deleted_at IS NULL AND i.status = 'paid' AND i.created_at >= '{SUB_START}'
+    ) pi ON pi.encounter_id = o.encounter_id AND pi.type_id = o.lab_test_id
+    WHERE o.deleted_at IS NULL AND o.created_at >= '{SUB_START}'
+    GROUP BY o.encounter_id
 ),
 ther_orders AS (
+    -- therapy item-level purchase = the order itself consumed (remaining decrements on paid invoice)
     SELECT encounter_id,
-           MAX(CASE WHEN remaining_quantity < quantity THEN 1 ELSE 0 END) AS consumed
+           MAX(CASE WHEN remaining_quantity < quantity THEN 1 ELSE 0 END) AS consumed,
+           MAX(CASE WHEN importance_level = 'Recommended' THEN 1 ELSE 0 END) AS has_rec,
+           MAX(CASE WHEN COALESCE(importance_level,'Essentials') <> 'Recommended' THEN 1 ELSE 0 END) AS has_ess,
+           MAX(CASE WHEN importance_level = 'Recommended' AND remaining_quantity < quantity THEN 1 ELSE 0 END) AS rec_paid,
+           MAX(CASE WHEN COALESCE(importance_level,'Essentials') <> 'Recommended' AND remaining_quantity < quantity THEN 1 ELSE 0 END) AS ess_paid
     FROM allo_consultations.orders
     WHERE deleted_at IS NULL AND consultation_id = '{THERAPY_TYPE}'
       AND created_at >= '{SUB_START}'
@@ -331,6 +359,12 @@ appt AS (
         MAX(CASE WHEN t.encounter_id IS NOT NULL THEN 1 ELSE 0 END) AS ther_rx,
         MAX(GREATEST(COALESCE(t.consumed,0), COALESCE(f.ther_paid,0))) AS ther_conv,
         MAX(COALESCE(f.ther_inv,0))                                 AS ther_inv,
+        MAX(COALESCE(d.has_ess,0))  AS m_ess,  MAX(COALESCE(d.ess_paid,0)) AS m_ess_cv,
+        MAX(COALESCE(d.has_rec,0))  AS m_rec,  MAX(COALESCE(d.rec_paid,0)) AS m_rec_cv,
+        MAX(COALESCE(l.has_ess,0))  AS t_ess,  MAX(COALESCE(l.ess_paid,0)) AS t_ess_cv,
+        MAX(COALESCE(l.has_rec,0))  AS t_rec,  MAX(COALESCE(l.rec_paid,0)) AS t_rec_cv,
+        MAX(COALESCE(t.has_ess,0))  AS th_ess, MAX(COALESCE(t.ess_paid,0)) AS th_ess_cv,
+        MAX(COALESCE(t.has_rec,0))  AS th_rec, MAX(COALESCE(t.rec_paid,0)) AS th_rec_cv,
         MAX(r.meds_norx)  AS meds_norx,
         MAX(r.meds_norx_fb) AS meds_norx_fb,
         MAX(r.elig_reason) AS elig_reason,
@@ -401,6 +435,37 @@ GROUP BY 1, 2, 3, 4, 5, 6, 7
 """
 
 
+def er_sql():
+    # One extra query feeding two tabs:
+    #  - Overall: call-level funnel (eligible -> bought >=1 prescribed component),
+    #    opt-out reason priority: whole-encounter, then item-level, then billing funnel
+    #  - Essential vs Recommended: per component, calls with essential/recommended
+    #    items and item-level purchase of each tier, plus untick (skip) reasons
+    return SHARED + """
+SELECT a.wk::varchar AS wk, a.provider_name, a.ctype,
+       COALESCE(pd.diag_cat, 'Others') AS diag,
+       a.meds_norx AS m_skip, a.tests_norx AS t_skip, a.ther_norx AS th_skip,
+       CASE WHEN GREATEST(a.meds_rx, a.tests_rx, a.ther_rx) = 1
+             AND GREATEST(LEAST(a.meds_rx, a.meds_conv), LEAST(a.tests_rx, a.tests_conv), LEAST(a.ther_rx, a.ther_conv)) = 0
+            THEN COALESCE(a.opt_enc, a.opt_drug, a.opt_lab, a.opt_ther,
+                 CASE WHEN GREATEST(a.meds_inv, a.tests_inv, a.ther_inv) = 1
+                      THEN 'No opt-out logged - invoice unpaid'
+                      ELSE 'No opt-out logged - no invoice' END) END AS ov_nc,
+       COUNT(*) AS n,
+       SUM(GREATEST(a.meds_rx, a.tests_rx, a.ther_rx)) AS elig,
+       SUM(GREATEST(LEAST(a.meds_rx, a.meds_conv), LEAST(a.tests_rx, a.tests_conv), LEAST(a.ther_rx, a.ther_conv))) AS ov_cv,
+       SUM(a.meds_rx) AS m_rx, SUM(a.m_ess) AS m_ess, SUM(a.m_ess_cv) AS m_ess_cv,
+       SUM(a.m_rec) AS m_rec, SUM(a.m_rec_cv) AS m_rec_cv,
+       SUM(a.tests_rx) AS t_rx, SUM(a.t_ess) AS t_ess, SUM(a.t_ess_cv) AS t_ess_cv,
+       SUM(a.t_rec) AS t_rec, SUM(a.t_rec_cv) AS t_rec_cv,
+       SUM(a.ther_rx) AS th_rx, SUM(a.th_ess) AS th_ess, SUM(a.th_ess_cv) AS th_ess_cv,
+       SUM(a.th_rec) AS th_rec, SUM(a.th_rec_cv) AS th_rec_cv
+FROM appt a
+LEFT JOIN paperform_diag pd ON pd.patient_id = a.patient_id
+GROUP BY 1, 2, 3, 4, 5, 6, 7, 8
+"""
+
+
 def main():
     # (wk, prov, ctype, diag) -> {tab: {"cv":n, "nc":{r:n}, "nr":{r:n}, "ne":n}}
     # "ne" = not eligible (no item of any kind prescribed) — excluded from the funnel
@@ -422,7 +487,30 @@ def main():
             else:
                 r = status[3:]; cell["nr"][r] = cell["nr"].get(r, 0) + n
         tab_totals[tab] = tot
-    # The three queries run minutes apart on live data, so a handful of calls can
+    # 4th query: essential/recommended split + overall funnel
+    er_grain = {}
+    for r in run_query(er_sql(), "ess-rec-overall"):
+        (wk, prov, ctype, diag, m_skip, t_skip, th_skip, ov_nc, n, elig, ov_cv,
+         m_rx, m_ess, m_ess_cv, m_rec, m_rec_cv,
+         t_rx, t_ess, t_ess_cv, t_rec, t_rec_cv,
+         th_rx, th_ess, th_ess_cv, th_rec, th_rec_cv) = r
+        key = (wk, prov, ctype, diag)
+        g = er_grain.setdefault(key, {
+            "calls": 0, "elig": 0, "cv": 0, "nc": {},
+            "comps": [{"rx": 0, "ess": 0, "ess_cv": 0, "rec": 0, "rec_cv": 0, "skips": {}} for _ in range(3)]})
+        g["calls"] += n; g["elig"] += elig; g["cv"] += ov_cv
+        if ov_nc:
+            g["nc"][ov_nc] = g["nc"].get(ov_nc, 0) + n
+        for ci, (rx, e, ecv, rc, rccv, skip) in enumerate([
+                (m_rx, m_ess, m_ess_cv, m_rec, m_rec_cv, m_skip),
+                (t_rx, t_ess, t_ess_cv, t_rec, t_rec_cv, t_skip),
+                (th_rx, th_ess, th_ess_cv, th_rec, th_rec_cv, th_skip)]):
+            c = g["comps"][ci]
+            c["rx"] += rx; c["ess"] += e; c["ess_cv"] += ecv; c["rec"] += rc; c["rec_cv"] += rccv
+            if skip:
+                c["skips"][skip] = c["skips"].get(skip, 0) + n
+
+    # The queries run minutes apart on live data, so a handful of calls can
     # complete in between — tolerate sub-0.1% drift, fail on anything bigger.
     drift = max(tab_totals.values()) - min(tab_totals.values())
     if drift > max(tab_totals.values()) * 0.001:
@@ -465,11 +553,22 @@ def main():
         rows_out.append([weeks.index(wk), provs.index(prov), ctypes.index(ctype),
                          diags.index(diag), calls, elig, ne] + packed)
 
+    er_out = []
+    for (wk, prov, ctype, diag), g in sorted(er_grain.items()):
+        if wk not in weeks or prov not in provs:
+            continue
+        ov = [g["cv"], [[rix(r), n] for r, n in sorted(g["nc"].items(), key=lambda x: -x[1])]]
+        comps = [[c["rx"], c["ess"], c["ess_cv"], c["rec"], c["rec_cv"],
+                  [[rix(r), n] for r, n in sorted(c["skips"].items(), key=lambda x: -x[1])]]
+                 for c in g["comps"]]
+        er_out.append([weeks.index(wk), provs.index(prov), ctypes.index(ctype),
+                       diags.index(diag), g["calls"], g["elig"], ov] + comps)
+
     ist = dt.datetime.utcnow() + dt.timedelta(hours=5, minutes=30)
     payload = {
         "updated": ist.strftime("%d %b %Y, %H:%M IST"),
         "weeks": weeks, "providers": provs, "ctypes": ctypes, "diags": diags,
-        "reasons": reason_list, "rows": rows_out,
+        "reasons": reason_list, "rows": rows_out, "er": er_out,
     }
     out = HERE / "tracker_data.js"
     out.write_text("window.EP_DATA = " + json.dumps(payload, separators=(",", ":")) + ";\n")
