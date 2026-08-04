@@ -230,6 +230,22 @@ reasons AS (
                 WHEN LEN(TRIM(value)) <= 3                      THEN 'Not specified'
                 ELSE 'Other'
             END END) AS meds_norx_fb,
+        -- why the call was not eligible (nothing prescribed at all)
+        MAX(CASE WHEN title = 'What is the reason for non-eligibility?' THEN
+            CASE
+                WHEN value ILIKE '%anatomical%' OR value ILIKE '%physical%' OR value ILIKE '%phimosis%'
+                                                                THEN 'Anatomical / physical concern'
+                WHEN value ILIKE '%not a sexual health%' OR value ILIKE '%nssd%'
+                  OR value ILIKE '%other issues%'               THEN 'Not a sexual-health concern'
+                WHEN value ILIKE '%sti%' AND (value ILIKE '%referral%' OR value ILIKE '%specialist%')
+                                                                THEN 'STI referral to specialist'
+                WHEN value ILIKE '%sex ed%' OR value ILIKE '%education%' OR value ILIKE '%doubt%'
+                  OR value ILIKE '%quer%' OR value ILIKE '%myth%' THEN 'Sex-ed / doubts only'
+                WHEN value ILIKE '%proxy%'                      THEN 'Proxy consultation'
+                WHEN value ILIKE '%minor%'                      THEN 'Minor (underage)'
+                WHEN LEN(TRIM(value)) <= 3                      THEN 'Not specified'
+                ELSE 'Other'
+            END END) AS elig_reason,
         MAX(CASE WHEN title = 'Why were no diagnostic tests recommended?' THEN
             CASE
                 WHEN value ILIKE '%not clinically indicated%'   THEN 'Not clinically indicated'
@@ -268,6 +284,7 @@ reasons AS (
     FROM allo_health.paperform_qa
     WHERE deleted_at IS NULL AND created_at >= '{SUB_START}'
       AND title IN ('Reason for not prescribing a recommended medication',
+                    'What is the reason for non-eligibility?',
                     'Why does the patient not need a prescription?',
                     'What is the reason for the patient not needing a prescription?',
                     'Why were no diagnostic tests recommended?',
@@ -316,6 +333,7 @@ appt AS (
         MAX(COALESCE(f.ther_inv,0))                                 AS ther_inv,
         MAX(r.meds_norx)  AS meds_norx,
         MAX(r.meds_norx_fb) AS meds_norx_fb,
+        MAX(r.elig_reason) AS elig_reason,
         MAX(r.tests_norx) AS tests_norx,
         MAX(r.ther_norx)  AS ther_norx,
         MAX(o.opt_drug)   AS opt_drug,
@@ -373,11 +391,13 @@ def tab_sql(status_expr):
 SELECT a.wk::varchar AS wk, a.provider_name, a.ctype,
        COALESCE(pd.diag_cat, 'Others') AS diag,
        GREATEST(a.meds_rx, a.tests_rx, a.ther_rx) AS elig,
+       CASE WHEN GREATEST(a.meds_rx, a.tests_rx, a.ther_rx) = 0
+            THEN COALESCE(a.elig_reason, a.meds_norx_fb, 'No reason recorded') END AS ne_reason,
        {status_expr} AS status,
        COUNT(*) AS n
 FROM appt a
 LEFT JOIN paperform_diag pd ON pd.patient_id = a.patient_id
-GROUP BY 1, 2, 3, 4, 5, 6
+GROUP BY 1, 2, 3, 4, 5, 6, 7
 """
 
 
@@ -389,12 +409,12 @@ def main():
     for tab, expr in TABS.items():
         rows = run_query(tab_sql(expr), tab)
         tot = 0
-        for wk, prov, ctype, diag, elig, status, n in rows:
+        for wk, prov, ctype, diag, elig, ne_reason, status, n in rows:
             key = (wk, prov, ctype, diag)
-            cell = grain.setdefault(key, {}).setdefault(tab, {"cv": 0, "nc": {}, "nr": {}, "ne": 0})
+            cell = grain.setdefault(key, {}).setdefault(tab, {"cv": 0, "nc": {}, "nr": {}, "ne": {}})
             tot += n
             if not elig:
-                cell["ne"] += n
+                cell["ne"][ne_reason] = cell["ne"].get(ne_reason, 0) + n
             elif status == "cv":
                 cell["cv"] += n
             elif status.startswith("nc:"):
@@ -427,18 +447,23 @@ def main():
         calls = 0
         elig = 0
         packed = []
+        ne_best = {}
         for tab in ("meds", "tests", "therapy"):
-            c = tabs.get(tab, {"cv": 0, "nc": {}, "nr": {}, "ne": 0})
+            c = tabs.get(tab, {"cv": 0, "nc": {}, "nr": {}, "ne": {}})
             nc = [[rix(r), n] for r, n in sorted(c["nc"].items(), key=lambda x: -x[1])]
             nr = [[rix(r), n] for r, n in sorted(c["nr"].items(), key=lambda x: -x[1])]
             n_nc = sum(n for _, n in nc)
             n_nr = sum(n for _, n in nr)
+            n_ne = sum(c["ne"].values())
             tab_elig = c["cv"] + n_nc + n_nr
             elig = max(elig, tab_elig)                    # max across tabs absorbs live drift
-            calls = max(calls, tab_elig + c["ne"])
+            calls = max(calls, tab_elig + n_ne)
+            if n_ne > sum(ne_best.values()):              # ne breakdown is tab-independent; keep the fullest
+                ne_best = c["ne"]
             packed.append([c["cv"] + n_nc, c["cv"], nc, nr])   # [rx, converted, nc-reasons, nr-reasons]
+        ne = [[rix(r), n] for r, n in sorted(ne_best.items(), key=lambda x: -x[1])]
         rows_out.append([weeks.index(wk), provs.index(prov), ctypes.index(ctype),
-                         diags.index(diag), calls, elig] + packed)
+                         diags.index(diag), calls, elig, ne] + packed)
 
     ist = dt.datetime.utcnow() + dt.timedelta(hours=5, minutes=30)
     payload = {
