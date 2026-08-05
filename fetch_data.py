@@ -458,6 +458,8 @@ def er_sql():
     # recommended-only), each with call-level component conversion.
     comp_block = """
        SUM(a.{dss}) AS {p}_dss,
+       SUM(CASE WHEN a.{dss}=1 AND a.{rx}=0 THEN 1 ELSE 0 END) AS {p}_dss_norx,
+       SUM(CASE WHEN a.{dss}=0 AND a.{rx}=1 THEN 1 ELSE 0 END) AS {p}_nodss_rx,
        SUM(a.{rx}) AS {p}_rx,
        SUM(LEAST(a.{rx}, a.{conv})) AS {p}_cv,
        SUM(CASE WHEN a.{rx}=1 AND a.{ess}=1 AND a.{rec}=0 THEN 1 ELSE 0 END) AS {p}_ae,
@@ -474,12 +476,15 @@ def er_sql():
     return SHARED + f"""
 SELECT a.wk::varchar AS wk, a.provider_name, a.ctype,
        COALESCE(pd.diag_cat, 'Others') AS diag,
+       CASE WHEN a.m_dss=1  AND a.meds_rx=0  THEN COALESCE(a.meds_norx, a.meds_norx_fb, 'No reason recorded') END AS m_nr,
+       CASE WHEN a.t_dss=1  AND a.tests_rx=0 THEN COALESCE(a.tests_norx, 'No reason recorded') END AS t_nr,
+       CASE WHEN a.th_dss=1 AND a.ther_rx=0  THEN COALESCE(a.ther_norx, 'No reason recorded') END AS th_nr,
        COUNT(*) AS n,
        SUM(GREATEST(a.meds_rx, a.tests_rx, a.ther_rx)) AS elig,
 {comps}
 FROM appt a
 LEFT JOIN paperform_diag pd ON pd.patient_id = a.patient_id
-GROUP BY 1, 2, 3, 4
+GROUP BY 1, 2, 3, 4, 5, 6, 7
 """
 
 
@@ -504,17 +509,22 @@ def main():
             else:
                 r = status[3:]; cell["nr"][r] = cell["nr"].get(r, 0) + n
         tab_totals[tab] = tot
-    # 4th query: funnel tab (DSS-recommended + tier split, 9 numbers per component)
+    # 4th query: funnel tab (DSS funnel + tier split, 11 numbers per component,
+    # plus per-comp not-prescribed reasons scoped to DSS-recommended calls)
     er_grain = {}
     for r in run_query(er_sql(), "funnel"):
         key = tuple(r[0:4])
-        n, elig = r[4], r[5]
-        g = er_grain.setdefault(key, {"calls": 0, "elig": 0, "comps": [[0]*9 for _ in range(3)]})
+        nrs_dims, n, elig = r[4:7], r[7], r[8]
+        g = er_grain.setdefault(key, {"calls": 0, "elig": 0,
+                                      "comps": [[0]*11 for _ in range(3)],
+                                      "nrs": [{}, {}, {}]})
         g["calls"] += n; g["elig"] += elig
         for ci in range(3):
-            base = 6 + ci*9
-            for j in range(9):
+            base = 9 + ci*11
+            for j in range(11):
                 g["comps"][ci][j] += r[base + j]
+            if nrs_dims[ci]:
+                g["nrs"][ci][nrs_dims[ci]] = g["nrs"][ci].get(nrs_dims[ci], 0) + n
 
     # The queries run minutes apart on live data, so a handful of calls can
     # complete in between — tolerate sub-0.1% drift, fail on anything bigger.
@@ -563,9 +573,10 @@ def main():
     for (wk, prov, ctype, diag), g in sorted(er_grain.items()):
         if wk not in weeks or prov not in provs:
             continue
-        # comp = [dss, rx, cv, all_ess, all_ess_cv, ess+rec, ess+rec_cv, only_rec, only_rec_cv]
+        # comp = [dss, dss_norx, nodss_rx, rx, cv, all_ess, all_ess_cv, ess+rec, ess+rec_cv, only_rec, only_rec_cv]
+        nrs = [[[rix(r), n] for r, n in sorted(m.items(), key=lambda x: -x[1])] for m in g["nrs"]]
         er_out.append([weeks.index(wk), provs.index(prov), ctypes.index(ctype),
-                       diags.index(diag), g["calls"], g["elig"]] + g["comps"])
+                       diags.index(diag), g["calls"], g["elig"]] + g["comps"] + nrs)
 
     ist = dt.datetime.utcnow() + dt.timedelta(hours=5, minutes=30)
     payload = {
