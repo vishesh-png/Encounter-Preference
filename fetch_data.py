@@ -588,6 +588,16 @@ def main():
     }
     out = HERE / "tracker_data.js"
     out.write_text("window.EP_DATA = " + json.dumps(payload, separators=(",", ":")) + ";\n")
+    # bump the cache-busting version on the script tag so browsers never pair a
+    # stale cached data file with newer page code (remember to re-run encrypt_gate)
+    import re, time as _time
+    plain = HERE / ".plain" / "index.html"
+    if plain.exists():
+        html = plain.read_text()
+        html2 = re.sub(r'tracker_data\.js\?v=\d+', f'tracker_data.js?v={int(_time.time())}', html)
+        if html2 != html:
+            plain.write_text(html2)
+            sys.stderr.write("bumped tracker_data.js cache version in .plain/index.html\n")
     sys.stderr.write(f"{len(rows_out)} grain rows, {out.stat().st_size/1e6:.2f} MB\n")
     print(out)
 
