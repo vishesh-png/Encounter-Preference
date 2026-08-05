@@ -462,6 +462,8 @@ def er_sql():
        SUM(CASE WHEN a.{dss}=0 AND a.{rx}=1 THEN 1 ELSE 0 END) AS {p}_nodss_rx,
        SUM(a.{rx}) AS {p}_rx,
        SUM(LEAST(a.{rx}, a.{conv})) AS {p}_cv,
+       SUM(CASE WHEN a.{dss}=1 AND a.{rx}=1 AND a.{conv}=1 THEN 1 ELSE 0 END) AS {p}_dss_cv,
+       SUM(CASE WHEN a.{dss}=0 AND a.{rx}=1 AND a.{conv}=1 THEN 1 ELSE 0 END) AS {p}_nodss_cv,
        SUM(CASE WHEN a.{rx}=1 AND a.{ess}=1 AND a.{rec}=0 THEN 1 ELSE 0 END) AS {p}_ae,
        SUM(CASE WHEN a.{rx}=1 AND a.{ess}=1 AND a.{rec}=0 AND a.{conv}=1 THEN 1 ELSE 0 END) AS {p}_ae_cv,
        SUM(CASE WHEN a.{rx}=1 AND a.{ess}=1 AND a.{rec}=1 THEN 1 ELSE 0 END) AS {p}_er,
@@ -516,12 +518,12 @@ def main():
         key = tuple(r[0:4])
         nrs_dims, n, elig = r[4:7], r[7], r[8]
         g = er_grain.setdefault(key, {"calls": 0, "elig": 0,
-                                      "comps": [[0]*11 for _ in range(3)],
+                                      "comps": [[0]*13 for _ in range(3)],
                                       "nrs": [{}, {}, {}]})
         g["calls"] += n; g["elig"] += elig
         for ci in range(3):
-            base = 9 + ci*11
-            for j in range(11):
+            base = 9 + ci*13
+            for j in range(13):
                 g["comps"][ci][j] += r[base + j]
             if nrs_dims[ci]:
                 g["nrs"][ci][nrs_dims[ci]] = g["nrs"][ci].get(nrs_dims[ci], 0) + n
@@ -573,7 +575,7 @@ def main():
     for (wk, prov, ctype, diag), g in sorted(er_grain.items()):
         if wk not in weeks or prov not in provs:
             continue
-        # comp = [dss, dss_norx, nodss_rx, rx, cv, all_ess, all_ess_cv, ess+rec, ess+rec_cv, only_rec, only_rec_cv]
+        # comp = [dss, dss_norx, nodss_rx, rx, cv, dss_cv, nodss_cv, all_ess, all_ess_cv, ess+rec, ess+rec_cv, only_rec, only_rec_cv]
         nrs = [[[rix(r), n] for r, n in sorted(m.items(), key=lambda x: -x[1])] for m in g["nrs"]]
         er_out.append([weeks.index(wk), provs.index(prov), ctypes.index(ctype),
                        diags.index(diag), g["calls"], g["elig"]] + g["comps"] + nrs)
