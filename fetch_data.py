@@ -258,6 +258,19 @@ reasons AS (
                 WHEN LEN(TRIM(value)) <= 3                      THEN 'Not specified'
                 ELSE 'Other'
             END END) AS meds_norx_fb,
+        -- prescription-check question fired when the doctor prescribes no meds
+        MAX(CASE WHEN title = 'Why are medications not required for this patient?' THEN
+            CASE
+                WHEN value ILIKE '%awaiting test%' OR value ILIKE '%test result%'
+                                                                THEN 'Awaiting test results'
+                WHEN value ILIKE '%therapy%' OR value ILIKE '%counsel%'
+                                                                THEN 'Therapy first - meds not needed now'
+                WHEN value ILIKE '%mild%' OR value ILIKE '%watchful%' OR value ILIKE '%situational%'
+                                                                THEN 'Mild / watchful waiting'
+                WHEN value ILIKE '%already%'                    THEN 'Already has / taken meds'
+                WHEN value ILIKE '%no symptom%'                 THEN 'No symptoms'
+                ELSE 'Other'
+            END END) AS meds_noreq,
         -- why the call was not eligible (nothing prescribed at all)
         MAX(CASE WHEN title = 'What is the reason for non-eligibility?' THEN
             CASE
@@ -312,6 +325,7 @@ reasons AS (
     FROM allo_health.paperform_qa
     WHERE deleted_at IS NULL AND created_at >= '{SUB_START}'
       AND title IN ('Reason for not prescribing a recommended medication',
+                    'Why are medications not required for this patient?',
                     'What is the reason for non-eligibility?',
                     'Why does the patient not need a prescription?',
                     'What is the reason for the patient not needing a prescription?',
@@ -382,6 +396,7 @@ appt AS (
         MAX(COALESCE(dg.dss_lab,0))  AS t_dss,
         MAX(COALESCE(dg.dss_ther,0)) AS th_dss,
         MAX(r.meds_norx)  AS meds_norx,
+        MAX(r.meds_noreq) AS meds_noreq,
         MAX(r.meds_norx_fb) AS meds_norx_fb,
         MAX(r.elig_reason) AS elig_reason,
         MAX(r.tests_norx) AS tests_norx,
@@ -414,7 +429,7 @@ TABS = {
                 CASE WHEN a.meds_all_svc = 0 THEN 'No opt-out logged - >=1 med not serviceable'
                      WHEN a.meds_inv = 1     THEN 'No opt-out logged - invoice unpaid'
                      ELSE 'No opt-out logged - no invoice' END)
-            ELSE 'nr:' || COALESCE(a.meds_norx, a.meds_norx_fb, 'No reason recorded')
+            ELSE 'nr:' || COALESCE(a.meds_noreq, a.meds_norx, a.meds_norx_fb, 'No reason recorded')
         END""",
     "tests": """
         CASE
@@ -478,7 +493,7 @@ def er_sql():
     return SHARED + f"""
 SELECT a.wk::varchar AS wk, a.provider_name, a.ctype,
        COALESCE(pd.diag_cat, 'Others') AS diag,
-       CASE WHEN a.m_dss=1  AND a.meds_rx=0  THEN COALESCE(a.meds_norx, a.meds_norx_fb, 'No reason recorded') END AS m_nr,
+       CASE WHEN a.m_dss=1  AND a.meds_rx=0  THEN COALESCE(a.meds_noreq, a.meds_norx, a.meds_norx_fb, 'No reason recorded') END AS m_nr,
        CASE WHEN a.t_dss=1  AND a.tests_rx=0 THEN COALESCE(a.tests_norx, 'No reason recorded') END AS t_nr,
        CASE WHEN a.th_dss=1 AND a.ther_rx=0  THEN COALESCE(a.ther_norx, 'No reason recorded') END AS th_nr,
        COUNT(*) AS n,
