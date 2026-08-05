@@ -321,6 +321,19 @@ reasons AS (
                     'Why doesn''t the patient believe in therapy?')
     GROUP BY encounter_id
 ),
+dss_tags AS (
+    -- DSS output reconciliation table: a row per DSS-touched item on the encounter.
+    -- dss_quantity > 0 means the DSS actually recommended the item (tag_type
+    -- recommended_correctly/not/under/over_prescribed); not_recommended_prescribed
+    -- rows have dss_quantity = 0 (doctor added outside DSS).
+    SELECT encounter_id,
+        MAX(CASE WHEN item_type = 'drug'         AND dss_quantity > 0 THEN 1 ELSE 0 END) AS dss_drug,
+        MAX(CASE WHEN item_type = 'lab'          AND dss_quantity > 0 THEN 1 ELSE 0 END) AS dss_lab,
+        MAX(CASE WHEN item_type = 'consultation' AND dss_quantity > 0 THEN 1 ELSE 0 END) AS dss_ther
+    FROM allo_analytics.encounter_tags
+    WHERE deleted_at IS NULL AND tag_category = 'item' AND created_at >= '{SUB_START}'
+    GROUP BY encounter_id
+),
 optout AS (
     SELECT encounter_id,
         MAX(CASE WHEN preference_type = 'drug'         THEN {bucket('opt_out_reason')} END) AS opt_drug,
@@ -365,6 +378,9 @@ appt AS (
         MAX(COALESCE(l.has_rec,0))  AS t_rec,  MAX(COALESCE(l.rec_paid,0)) AS t_rec_cv,
         MAX(COALESCE(t.has_ess,0))  AS th_ess, MAX(COALESCE(t.ess_paid,0)) AS th_ess_cv,
         MAX(COALESCE(t.has_rec,0))  AS th_rec, MAX(COALESCE(t.rec_paid,0)) AS th_rec_cv,
+        MAX(COALESCE(dg.dss_drug,0)) AS m_dss,
+        MAX(COALESCE(dg.dss_lab,0))  AS t_dss,
+        MAX(COALESCE(dg.dss_ther,0)) AS th_dss,
         MAX(r.meds_norx)  AS meds_norx,
         MAX(r.meds_norx_fb) AS meds_norx_fb,
         MAX(r.elig_reason) AS elig_reason,
@@ -383,6 +399,7 @@ appt AS (
     LEFT JOIN inv_flags   f ON f.encounter_id = e.id
     LEFT JOIN reasons     r ON r.encounter_id = e.id
     LEFT JOIN optout      o ON o.encounter_id = e.id
+    LEFT JOIN dss_tags    dg ON dg.encounter_id = e.id
     GROUP BY b.appt_id, b.patient_id, b.wk, b.provider_name, b.ctype
 )
 """
@@ -436,33 +453,33 @@ GROUP BY 1, 2, 3, 4, 5, 6, 7
 
 
 def er_sql():
-    # One extra query feeding two tabs:
-    #  - Overall: call-level funnel (eligible -> bought >=1 prescribed component),
-    #    opt-out reason priority: whole-encounter, then item-level, then billing funnel
-    #  - Essential vs Recommended: per component, calls with essential/recommended
-    #    items and item-level purchase of each tier, plus untick (skip) reasons
-    return SHARED + """
+    # Funnel-tab query: per grain, DSS-recommended calls and the mutually-exclusive
+    # importance-tier split of prescribed calls (all-essential / essential+recommended /
+    # recommended-only), each with call-level component conversion.
+    comp_block = """
+       SUM(a.{dss}) AS {p}_dss,
+       SUM(a.{rx}) AS {p}_rx,
+       SUM(LEAST(a.{rx}, a.{conv})) AS {p}_cv,
+       SUM(CASE WHEN a.{rx}=1 AND a.{ess}=1 AND a.{rec}=0 THEN 1 ELSE 0 END) AS {p}_ae,
+       SUM(CASE WHEN a.{rx}=1 AND a.{ess}=1 AND a.{rec}=0 AND a.{conv}=1 THEN 1 ELSE 0 END) AS {p}_ae_cv,
+       SUM(CASE WHEN a.{rx}=1 AND a.{ess}=1 AND a.{rec}=1 THEN 1 ELSE 0 END) AS {p}_er,
+       SUM(CASE WHEN a.{rx}=1 AND a.{ess}=1 AND a.{rec}=1 AND a.{conv}=1 THEN 1 ELSE 0 END) AS {p}_er_cv,
+       SUM(CASE WHEN a.{rx}=1 AND a.{ess}=0 AND a.{rec}=1 THEN 1 ELSE 0 END) AS {p}_or,
+       SUM(CASE WHEN a.{rx}=1 AND a.{ess}=0 AND a.{rec}=1 AND a.{conv}=1 THEN 1 ELSE 0 END) AS {p}_or_cv"""
+    comps = ",".join([
+        comp_block.format(p="m", dss="m_dss", rx="meds_rx", conv="meds_conv", ess="m_ess", rec="m_rec"),
+        comp_block.format(p="t", dss="t_dss", rx="tests_rx", conv="tests_conv", ess="t_ess", rec="t_rec"),
+        comp_block.format(p="th", dss="th_dss", rx="ther_rx", conv="ther_conv", ess="th_ess", rec="th_rec"),
+    ])
+    return SHARED + f"""
 SELECT a.wk::varchar AS wk, a.provider_name, a.ctype,
        COALESCE(pd.diag_cat, 'Others') AS diag,
-       a.meds_norx AS m_skip, a.tests_norx AS t_skip, a.ther_norx AS th_skip,
-       CASE WHEN GREATEST(a.meds_rx, a.tests_rx, a.ther_rx) = 1
-             AND GREATEST(LEAST(a.meds_rx, a.meds_conv), LEAST(a.tests_rx, a.tests_conv), LEAST(a.ther_rx, a.ther_conv)) = 0
-            THEN COALESCE(a.opt_enc, a.opt_drug, a.opt_lab, a.opt_ther,
-                 CASE WHEN GREATEST(a.meds_inv, a.tests_inv, a.ther_inv) = 1
-                      THEN 'No opt-out logged - invoice unpaid'
-                      ELSE 'No opt-out logged - no invoice' END) END AS ov_nc,
        COUNT(*) AS n,
        SUM(GREATEST(a.meds_rx, a.tests_rx, a.ther_rx)) AS elig,
-       SUM(GREATEST(LEAST(a.meds_rx, a.meds_conv), LEAST(a.tests_rx, a.tests_conv), LEAST(a.ther_rx, a.ther_conv))) AS ov_cv,
-       SUM(a.meds_rx) AS m_rx, SUM(a.m_ess) AS m_ess, SUM(a.m_ess_cv) AS m_ess_cv,
-       SUM(a.m_rec) AS m_rec, SUM(a.m_rec_cv) AS m_rec_cv,
-       SUM(a.tests_rx) AS t_rx, SUM(a.t_ess) AS t_ess, SUM(a.t_ess_cv) AS t_ess_cv,
-       SUM(a.t_rec) AS t_rec, SUM(a.t_rec_cv) AS t_rec_cv,
-       SUM(a.ther_rx) AS th_rx, SUM(a.th_ess) AS th_ess, SUM(a.th_ess_cv) AS th_ess_cv,
-       SUM(a.th_rec) AS th_rec, SUM(a.th_rec_cv) AS th_rec_cv
+{comps}
 FROM appt a
 LEFT JOIN paperform_diag pd ON pd.patient_id = a.patient_id
-GROUP BY 1, 2, 3, 4, 5, 6, 7, 8
+GROUP BY 1, 2, 3, 4
 """
 
 
@@ -487,28 +504,17 @@ def main():
             else:
                 r = status[3:]; cell["nr"][r] = cell["nr"].get(r, 0) + n
         tab_totals[tab] = tot
-    # 4th query: essential/recommended split + overall funnel
+    # 4th query: funnel tab (DSS-recommended + tier split, 9 numbers per component)
     er_grain = {}
-    for r in run_query(er_sql(), "ess-rec-overall"):
-        (wk, prov, ctype, diag, m_skip, t_skip, th_skip, ov_nc, n, elig, ov_cv,
-         m_rx, m_ess, m_ess_cv, m_rec, m_rec_cv,
-         t_rx, t_ess, t_ess_cv, t_rec, t_rec_cv,
-         th_rx, th_ess, th_ess_cv, th_rec, th_rec_cv) = r
-        key = (wk, prov, ctype, diag)
-        g = er_grain.setdefault(key, {
-            "calls": 0, "elig": 0, "cv": 0, "nc": {},
-            "comps": [{"rx": 0, "ess": 0, "ess_cv": 0, "rec": 0, "rec_cv": 0, "skips": {}} for _ in range(3)]})
-        g["calls"] += n; g["elig"] += elig; g["cv"] += ov_cv
-        if ov_nc:
-            g["nc"][ov_nc] = g["nc"].get(ov_nc, 0) + n
-        for ci, (rx, e, ecv, rc, rccv, skip) in enumerate([
-                (m_rx, m_ess, m_ess_cv, m_rec, m_rec_cv, m_skip),
-                (t_rx, t_ess, t_ess_cv, t_rec, t_rec_cv, t_skip),
-                (th_rx, th_ess, th_ess_cv, th_rec, th_rec_cv, th_skip)]):
-            c = g["comps"][ci]
-            c["rx"] += rx; c["ess"] += e; c["ess_cv"] += ecv; c["rec"] += rc; c["rec_cv"] += rccv
-            if skip:
-                c["skips"][skip] = c["skips"].get(skip, 0) + n
+    for r in run_query(er_sql(), "funnel"):
+        key = tuple(r[0:4])
+        n, elig = r[4], r[5]
+        g = er_grain.setdefault(key, {"calls": 0, "elig": 0, "comps": [[0]*9 for _ in range(3)]})
+        g["calls"] += n; g["elig"] += elig
+        for ci in range(3):
+            base = 6 + ci*9
+            for j in range(9):
+                g["comps"][ci][j] += r[base + j]
 
     # The queries run minutes apart on live data, so a handful of calls can
     # complete in between — tolerate sub-0.1% drift, fail on anything bigger.
@@ -557,12 +563,9 @@ def main():
     for (wk, prov, ctype, diag), g in sorted(er_grain.items()):
         if wk not in weeks or prov not in provs:
             continue
-        ov = [g["cv"], [[rix(r), n] for r, n in sorted(g["nc"].items(), key=lambda x: -x[1])]]
-        comps = [[c["rx"], c["ess"], c["ess_cv"], c["rec"], c["rec_cv"],
-                  [[rix(r), n] for r, n in sorted(c["skips"].items(), key=lambda x: -x[1])]]
-                 for c in g["comps"]]
+        # comp = [dss, rx, cv, all_ess, all_ess_cv, ess+rec, ess+rec_cv, only_rec, only_rec_cv]
         er_out.append([weeks.index(wk), provs.index(prov), ctypes.index(ctype),
-                       diags.index(diag), g["calls"], g["elig"], ov] + comps)
+                       diags.index(diag), g["calls"], g["elig"]] + g["comps"])
 
     ist = dt.datetime.utcnow() + dt.timedelta(hours=5, minutes=30)
     payload = {
